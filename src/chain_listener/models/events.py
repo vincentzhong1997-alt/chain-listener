@@ -70,10 +70,11 @@ class ProcessingInfo(BaseModel):
     error_info: Optional[ErrorInfo] = Field(default=None, description="Error information if processing failed")
     processor_id: Optional[str] = Field(default=None, description="ID of the processor that handled the event")
 
-    @validator("error_info")
-    def validate_error_info_consistency(cls, v, values):
+    @field_validator("error_info")
+    @classmethod
+    def validate_error_info_consistency(cls, v, info):
         """Ensure error_info is present when status is FAILED."""
-        if values.get("status") == EventStatus.FAILED and v is None:
+        if info.data.get("status") == EventStatus.FAILED and v is None:
             raise ValueError("error_info is required when status is FAILED")
         return v
 
@@ -104,38 +105,41 @@ class BlockchainEvent(BaseModel):
         description="Additional event metadata"
     )
 
-    class Config:
-        """Pydantic configuration."""
-        use_enum_values = True
-        validate_assignment = True
+    model_config = ConfigDict(
+        use_enum_values=True,
+        validate_assignment=True
+    )
 
-    @validator("transaction_hash")
+    @field_validator("transaction_hash")
+    @classmethod
     def validate_transaction_hash(cls, v):
         """Validate transaction hash format."""
         if not v or len(v) < 10:
             raise ValueError("Transaction hash must be at least 10 characters")
         return v
 
-    @validator("contract_address")
+    @field_validator("contract_address")
+    @classmethod
     def validate_contract_address(cls, v):
         """Validate contract address format."""
-        if not v:
-            raise ValueError("Contract address cannot be empty")
+        from chain_listener.utils import validate_and_format_address
 
-        # For non-EVM chains, just check non-empty
-        if len(v) < 3:
-            raise ValueError("Contract address must be at least 3 characters")
+        # For EVM chains starting with 0x, validate proper format
+        if v.startswith("0x") and not (len(v) == 42 and all(c in "0123456789abcdefABCDEF" for c in v[2:])):
+            raise ValueError("Invalid EVM address format")
 
-        return v.lower() if v.startswith("0x") else v
+        return validate_and_format_address(v)
 
-    @validator("block_number")
+    @field_validator("block_number")
+    @classmethod
     def validate_block_number(cls, v):
         """Validate block number."""
         if v is not None and v < 0:
             raise ValueError("Block number cannot be negative")
         return v
 
-    @validator("block_timestamp")
+    @field_validator("block_timestamp")
+    @classmethod
     def validate_block_timestamp(cls, v):
         """Validate block timestamp."""
         if v is not None and v < 0:
@@ -225,7 +229,8 @@ class CrossChainEvent(BlockchainEvent):
     bridge_contract: Optional[str] = Field(default=None, description="Bridge contract address")
     relay_data: Optional[Dict[str, Any]] = Field(default=None, description="Additional relay data")
 
-    @validator("amount")
+    @field_validator("amount")
+    @classmethod
     def validate_amount(cls, v):
         """Validate amount format."""
         if not v:
@@ -237,7 +242,8 @@ class CrossChainEvent(BlockchainEvent):
             raise ValueError(f"Amount must be a valid number string: {v}")
         return v
 
-    @validator("requester")
+    @field_validator("requester")
+    @classmethod
     def validate_requester(cls, v):
         """Validate requester address."""
         if not v:

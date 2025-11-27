@@ -273,12 +273,16 @@ def create_main_config(config_dict: Dict) -> MainConfig:
 
 
 def merge_configs(base_config: Dict, override_config: Dict) -> Dict:
-    """Merge two configuration dictionaries."""
+    """Deep merge two configuration dictionaries.
+
+    Override config takes precedence, but nested dictionaries are merged.
+    """
     merged = base_config.copy()
 
     for key, value in override_config.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key] = {**merged[key], **value}
+            # Deep merge nested dictionaries
+            merged[key] = merge_configs(merged[key], value)
         else:
             merged[key] = value
 

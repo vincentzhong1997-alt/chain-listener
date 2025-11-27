@@ -331,6 +331,7 @@ def test_config_merging():
         "blockchains": {
             "ethereum": {
                 "weight": 3,  # Override weight
+                "rpc": {"urls": ["https://eth.llamarpc.com"]},  # Keep required RPC config
                 "contracts": [  # Add contracts
                     {
                         "name": "WBTC",

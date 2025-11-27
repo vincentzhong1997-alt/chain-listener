@@ -4,7 +4,7 @@ A universal multi-chain distributed blockchain listener SDK that provides reusab
 
 ## Features
 
-- **Universal Multi-Chain Support**: Ethereum, BSC, Base, Solana, TRON, Kava, Osmosis
+- **Universal Multi-Chain Support**: Ethereum, BSC, Polygon, Arbitrum, Optimism, Avalanche, Solana, TRON, Kava, Osmosis, Base
 - **Distributed Architecture**: Support for multi-instance deployment with automatic load balancing
 - **Event-Driven**: Callback-based event processing with user-defined handlers
 - **Fault Tolerant**: Automatic failover and recovery mechanisms
@@ -67,8 +67,6 @@ listener_task = await listener.start_distributed_async()
 
 ## Development
 
-This project follows Test-Driven Development (TDD) principles.
-
 ### Setup
 
 ```bash
@@ -79,17 +77,22 @@ pip install poetry
 poetry install
 
 # Activate virtual environment
-poetry shell
+poetry env activate
 ```
 
 ### Testing
 
+This project follows Test-Driven Development (TDD) principles and has comprehensive test coverage.
+
 ```bash
 # Run tests with coverage
-pytest --cov=chain_listener --cov-report=html
+poetry run pytest --cov=chain_listener --cov-report=html
 
 # Run specific test file
-pytest tests/unit/test_models.py -v
+poetry runpytest tests/unit/test_events.py -v
+
+# Run all tests
+poetry run pytest
 ```
 
 ### Code Quality

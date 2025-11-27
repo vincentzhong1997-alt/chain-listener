@@ -3,7 +3,7 @@
 ## Project Overview
 This is a universal multi-chain distributed blockchain listener SDK that provides reusable multi-chain monitoring capabilities. The SDK focuses on asynchronous blockchain event listening and data processing, offering flexible solutions for different business scenarios.
 
-## Development Guidelines
+## Development Notice
 - **Network Access**: Internet access is available. All searches and documentation should be in English. For uncertain technical issues (SQLAlchemy/Web3), use exa MCP.
 - **Environment**: Always work in virtual environment if venv exists. Use standardized, readable commit messages for Git.
 - **Planning**: Default to deep thinking and step-by-step planning. For complex or high-risk tasks, provide overall plan first, get confirmation once, then implement without repeated confirmations.
@@ -53,19 +53,68 @@ chain_listener/
 └── .gitignore
 ```
 
-### Naming Conventions
-- **Package name**: All lowercase with underscores (e.g., `chain_listener`)
-- **Module name**: All lowercase with underscores
-- **Class name**: CamelCase (e.g., `BlockchainListener`, `EventProcessor`)
-- **Function name**: All lowercase with underscores
-- **Constant name**: All uppercase with underscores
+### Code Spec
 
-### Code Style & Standards
-- Follow PEP 8 code style
-- Use type hints for all function signatures and complex variables
-- Maintain maximum line length of 88 characters (Black default)
-- Use f-strings for string formatting
-- Write descriptive docstrings following Google style
+#### Code Style & Formatting (强制)
+- **基准**：严格遵循 PEP 8。
+- **格式化**：
+  - 缩进：必须使用 4 个空格，禁止使用 Tab。
+  - 行宽：最大 88 字符 (Black default)。
+  - 字符串：使用 f-strings 进行格式化。
+- **导入规范 (Imports)**：
+  - 顺序：标准库 -> 第三方库 -> 本地库 (每组间空一行)。
+  - 必须使用绝对导入。
+  - **禁止**使用通配符导入 (`from module import *`)。
+
+#### Naming Conventions (命名约定)
+- **Package/Module**: `lowercase_with_underscores` (如 `chain_listener`, `utils.py`)，保持简短。
+- **Class**: `CapitalizedCamelCase` (如 `BlockchainListener`)。
+- **Function/Variable**: `snake_case` (如 `get_user_profile`, `user_id`)。
+- **Constant**: `ALL_CAPS` (如 `MAX_CONNECTIONS`)。
+
+#### Type Hints & Documentation (强制)
+- **类型注解 (Type Hints)**：
+  - **所有**函数签名（参数及返回值）必须包含类型注解。
+  - 复杂变量需显式标注类型。
+  - 使用 `typing` 模块或 Python 原生类型写法，确保可通过 `mypy` 检查。
+- **文档字符串 (Docstrings)**：
+  - 所有模块、类、公共方法必须编写文档。
+  - **风格**：严格遵循 **Google Style** (包含 Args, Returns, Raises)。
+
+#### Architecture & Design Principles
+- **DRY (Don't Repeat Yourself)**：禁止逻辑、常量或配置重复。立即提取为 `utils`、`constants` 或独立类。
+- **SRP (Single Responsibility)**：
+  - 每个类仅负责一个核心任务。
+  - 单个函数长度建议不超过 40 行。
+  - 避免“上帝类”或“上帝函数”。
+- **Extensibility (推荐)**：
+  - 关键业务模块必须基于**接口**设计。
+  - 预见变化点时（如多种支付方式），优先使用策略模式或工厂模式，避免复杂的 `if-else` 链。
+
+#### Example Reference
+请参照以下范例的代码风格、类型标注和文档写法：
+
+```python
+from typing import Optional
+from .models import User
+
+def calculate_price(base: float, tax_rate: float) -> float:
+    """计算含税价格。
+
+    Args:
+        base: 不含税的基础价格。
+        tax_rate: 税率，例如 0.1 代表 10%。
+
+    Returns:
+        计算得出的含税总价。
+
+    Raises:
+        ValueError: 如果 base 或 tax_rate 为负数。
+    """
+    if base < 0 or tax_rate < 0:
+        raise ValueError("价格和税率不能为负数")
+    return base * (1 + tax_rate)
+```
 
 ### SDK Design Principles
 - **User-friendly Design**: Simple API with reasonable defaults
