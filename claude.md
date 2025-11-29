@@ -3,11 +3,18 @@
 ## Project Overview
 This is a universal multi-chain distributed blockchain listener SDK that provides reusable multi-chain monitoring capabilities. The SDK focuses on asynchronous blockchain event listening and data processing, offering flexible solutions for different business scenarios.
 
+## 🚨 Critical References (Must Read)
+### 📋 Design Protocol
+- **文件**: [`design-protocol.md`](design-protocol.md)
+- **用途**: 指导软件开发方案设计阶段的思考过程与输出标准
+- **触发条件**: 当需求进行技术方案设计时，**必须**参考此文档
+
 ## Development Notice
 - **Network Access**: Internet access is available. All searches and documentation should be in English. For uncertain technical issues (SQLAlchemy/Web3), use exa MCP.
 - **Environment**: Always work in virtual environment if venv exists. Use standardized, readable commit messages for Git.
 - **Planning**: Default to deep thinking and step-by-step planning. For complex or high-risk tasks, provide overall plan first, get confirmation once, then implement without repeated confirmations.
 - **Quality**: Quality over speed, understanding over blind execution.
+- **Progress Updating**: when you achieve millestone progress, update the PROGRESS.md.
 
 ## Project Documentation
 Detailed SDK architecture documentation is available in the `solution/` directory.
