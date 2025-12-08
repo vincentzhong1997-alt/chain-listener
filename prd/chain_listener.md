@@ -8,6 +8,12 @@
 
 构建一个轻量级、高性能的 Python SDK，旨在为开发者提供统一的接口来监听不同区块链网络（EVM兼容链、Tron、Solana）上的合约事件。
 该 SDK 作为连接链上数据与链下业务逻辑的“胶水层”，通过回调函数（Callback）机制，让开发者无需关注底层 RPC 通信、重连机制和区块解析，只需专注于业务逻辑处理。
+### 核心价值
+* **多链统一接口:** 降低多链开发复杂度
+* **降低使用门槛:** 5行代码启动，复杂配置封装在配置文件中
+* **灵活配置:** 提供默认配置，可自定义覆盖默认配置, 提供丰富配置项灵活配置
+* **单机高性能:** 异步架构，支持高并发（100+ TPS）
+* **状态持久化:** 支持断点续传，防止数据丢失
 
 ## 2\. 核心范围 (Scope)
 
@@ -17,6 +23,7 @@
       * **EVM Chains:** Ethereum, BSC, Polygon, Arbitrum 等（基于 JSON-RPC）。
       * **Tron:** 基于 TronGrid/FullNode HTTP API 或 GRPC。
       * **Solana:** 基于 RPC (`logsSubscribe` 或轮询 `getSignaturesForAddress`).
+      * **其他链:** 需要考虑未来接入其他链的易扩展性。
   * **核心功能：**
       * 监听指定合约地址的特定事件（Events/Logs）。
       * 自动解析合约 ABI/IDL，将原始 Hex 数据转换为可读的 Python 字典/对象。
@@ -55,9 +62,7 @@
 ### 3.4 状态管理 (State)
 
   * **Storage Interface:** 提供抽象存储接口（Driver），默认实现：
-      * `MemoryDriver` (单机，不持久化)
       * `RedisDriver` (分布式储存持久化)
-      * `FileDriver` (本地持久化)
 
 ### 3.5 错误处理与重试 (Robustness Logic)
 

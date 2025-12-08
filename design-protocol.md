@@ -9,7 +9,7 @@
 ---
 
 ## 🔄 Phase 1: 深度分析与盘问 (Context Analysis)
-**🛑 STOP! Do not generate the solution yet.** 阅读上下文后，执行以下步骤：
+**🛑 STOP! Do not generate the solution yet.** 首先分析相关的需求文档或其他上下文，然后执行以下步骤：
 1.  **资产扫描**: 检查现有 `schema`, `types`, 和 `utils`，列出可复用的具体代码片段。
 2.  **约束识别**: 识别技术栈限制（如：Next.js App Router vs Pages Router, SQL vs NoSQL）。
 3.  **澄清问题**: 列出 3-5 个关键问题，特别是关于**边缘情况 (Edge Cases)** 和 **错误处理** 的预期。
@@ -24,7 +24,7 @@
 * **接口定义**: 定义函数签名/API 路径，包括 Request/Response 类型。
 * **数据层**: 具体的 SQL DDL 或 Prisma/ORM Schema 变更代码。
 * **错误处理**: 定义可能出现的异常及 HTTP 状态码或错误提示。
-* **核心逻辑**: 对于复杂算法，使用 **自然语言步骤** 或 **伪代码 (Pseudo-code)** 描述，严禁直接贴代码块。
+* **避免过度详细（非常重要）**: 对于复杂算法，使用 **自然语言步骤** 或 **伪代码 (Pseudo-code)** 描述，严禁直接贴代码块。
 
 ---
 
