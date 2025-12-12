@@ -16,9 +16,6 @@ This is a universal multi-chain distributed blockchain listener SDK that provide
 - **Quality**: Quality over speed, understanding over blind execution.
 - **Progress Updating**: when you achieve millestone progress, update the PROGRESS.md.
 
-## Project Documentation
-Detailed SDK architecture documentation is available in the `solution/` directory.
-
 ## SDK Development Standards
 
 ### Project Directory Structure
@@ -39,10 +36,15 @@ chain_listener/
 │       ├── adapters/
 │       │   ├── __init__.py
 │       │   ├── ethereum.py      # Ethereum adapter
-│       │   ├── bsc.py          # BSC adapter
-│       │   └── base.py         # Base adapter interface
+│       │   ├── solana.py        # Solana adapter
+│       │   ├── tron.py          # Tron adapter
+│       │   └── base.py          # Base adapter interface
 │       ├── exceptions.py        # Custom exceptions
-│       └── utils.py             # Utility functions
+│       └── utils/               # 工具函数 (模块化)
+│           ├── address.py       # 地址验证和格式化
+│           ├── conversion.py    # 数据转换工具
+│           ├── validation.py    # 通用验证逻辑
+│           └── crypto.py        # 加密和哈希工具
 ├── tests/
 │   ├── unit/
 │   ├── integration/
@@ -138,35 +140,6 @@ def calculate_price(base: float, tax_rate: float) -> float:
 - **Use Poetry for Dependency Management**
   - Poetry provides integrated solution for dependency resolution, virtual environment management, and packaging.
 
-  ```toml
-  # pyproject.toml
-  [tool.poetry]
-  name = "chain-listener"
-  version = "0.1.0"
-  description = "Universal multi-chain distributed blockchain listener SDK"
-
-  [tool.poetry.dependencies]
-  python = "^3.9"
-  web3 = "^6.11.0"
-  aiohttp = "^3.9.0"
-  aioredis = "^2.0.0"
-  motor = "^3.3.0"
-  pydantic = "^2.5.0"
-  async-timeout = "^4.0.3"
-
-  [tool.poetry.group.dev.dependencies]
-  pytest = "^7.4.3"
-  pytest-asyncio = "^0.21.1"
-  black = "^23.11.0"
-  mypy = "^1.7.1"
-  flake8 = "^6.1.0"
-  pre-commit = "^3.6.0"
-
-  [build-system]
-  requires = ["poetry-core"]
-  build-backend = "poetry.core.masonry.api"
-  ```
-
 - **Dependency Layering**
   - Clear separation of production, development, and testing dependencies
   - Use dependency groups (Poetry) or multiple requirements files (pip)
@@ -181,8 +154,6 @@ def calculate_price(base: float, tax_rate: float) -> float:
 ### Core Technology Stack
 - **Blockchain Interaction**: Web3.py for Ethereum-compatible chains
 - **Async Framework**: asyncio with aiohttp for HTTP requests
-- **Distributed Coordination**: aioredis for coordination and deduplication
-- **Data Persistence**: Motor (async MongoDB driver) for progress storage
 - **Configuration**: Pydantic for type-safe configuration management
 
 ### Documentation & Comments
@@ -191,16 +162,12 @@ def calculate_price(base: float, tax_rate: float) -> float:
 - Write clear, concise comments explaining complex logic
 - Maintain a comprehensive README with quick start guide
 - Document all configuration options and examples
-
-### Testing Strategy
-- **Unit Tests**: Test individual components in isolation
-- **Integration Tests**: Test interaction between components
-- **End-to-End Tests**: Test complete event flow from blockchain to processing
-- **Performance Tests**: Validate performance under load
-- Use pytest with pytest-asyncio for async testing
-- Mock external dependencies (blockchain nodes, Redis, MongoDB)
+- Detailed SDK architecture documentation is available in the `solution/` directory.
+- [Critical] If proposed changes conflict with the existing document description or project rules, explicitly flag this discrepancy to the user and ask if the documentation should be updated to reflect the new logic.
 
 ### Test-Driven Development (TDD) Workflow
+
+**Important** In this project, you should use TDD as your main Workflow.
 
 **TDD Philosophy**: Write failing tests before writing production code, then make them pass and refactor. This ensures comprehensive test coverage, better design, and fewer bugs.
 
@@ -228,10 +195,11 @@ touch tests/unit/test_new_feature.py
 
 **Step 3: Run Tests to Confirm Failure**
 ```bash
-# Ensure tests fail for the right reasons
-pytest tests/unit/test_new_feature.py -v
+# Run specific test file
+poetry runpytest tests/unit/test_events.py -v
 
-# Tests should clearly indicate what's missing
+# Run all tests
+poetry run pytest
 ```
 
 **Step 4: Implement Minimal Code**
@@ -240,15 +208,13 @@ pytest tests/unit/test_new_feature.py -v
 - Avoid gold-plating or over-engineering
 
 **Step 5: Run Tests to Confirm Success**
-```bash
-# All tests should now pass
-pytest tests/unit/test_new_feature.py -v --cov=chain_listener
-```
 
 **Step 6: Refactor and Improve**
 - Improve code structure, readability, and performance
 - Maintain test coverage during refactoring
 - Run tests after each refactoring change
+- not to modify test cases, especially the assert statements, unless you have solid evidence.
+- When you need to modify test cases, inform the user of the reasons and seek their approval.
 
 **Step 7: Review and Repeat**
 - Review test quality and coverage
@@ -263,130 +229,16 @@ pytest tests/unit/test_new_feature.py -v --cov=chain_listener
 - One assertion per test when possible
 - Test both happy path and error conditions
 
-**Test Organization**
-```python
-# Example test structure
-class TestBlockchainListener:
-    @pytest.fixture
-    def listener_config(self):
-        return {"network": "ethereum", "rpc_url": "http://localhost:8545"}
-
-    async def test_listener_connects_successfully(self, listener_config):
-        # Arrange
-        listener = BlockchainListener(listener_config)
-
-        # Act
-        await listener.connect()
-
-        # Assert
-        assert listener.is_connected == True
-
-    async def test_listener_raises_error_with_invalid_config(self):
-        # Arrange
-        invalid_config = {"network": "invalid"}
-        listener = BlockchainListener(invalid_config)
-
-        # Act & Assert
-        with pytest.raises(InvalidConfigError):
-            await listener.connect()
-```
-
 **Mock Strategy**
 - Mock external dependencies (blockchain nodes, databases, APIs)
 - Use dependency injection for easier testing
 - Create realistic test data and scenarios
-- Don't mock the system under test
+- [Critical] Don't mock the system under test
 
 **Coverage Requirements**
 - Maintain minimum 90% line coverage
 - Aim for 100% coverage for critical business logic
 - Use coverage reports to identify untested code paths
-
-#### TDD Integration with Git Workflow
-
-**Pre-commit TDD Integration**
-```yaml
-# .pre-commit-config.yaml
-repos:
-  - repo: local
-    hooks:
-      - id: pytest-check
-        name: pytest-check
-        entry: pytest
-        language: system
-        pass_filenames: false
-        always_run: true
-        args: ["--cov=chain_listener", "--cov-fail-under=90"]
-```
-
-**TDD Branch Strategy**
-1. Create feature branch
-2. Write failing tests for new feature
-3. Implement feature to make tests pass
-4. Ensure 100% test coverage
-5. Run full test suite including integration tests
-6. Submit pull request with test results
-
-#### TDD Examples for Common Scenarios
-
-**New Functionality**
-```python
-# 1. Write test first
-async def test_event_processor_filters_by_contract_address(self):
-    # Arrange
-    processor = EventProcessor()
-    event = MockEvent(contract_address="0x123...")
-    processor.set_contract_filter("0x123...")
-
-    # Act
-    result = await processor.process_event(event)
-
-    # Assert
-    assert result.processed == True
-    assert result.filtered == False
-```
-
-**Error Handling**
-```python
-async def test_listener_handles_network_timeout_gracefully(self):
-    # Arrange
-    listener = BlockchainListener({"timeout": 1})
-
-    # Act & Assert
-    with pytest.raises(NetworkTimeoutError):
-        await listener.connect_with_retry(max_attempts=1)
-```
-
-**Edge Cases**
-```python
-async def test_coordinator_handles_empty_event_list(self):
-    # Arrange
-    coordinator = EventCoordinator()
-    events = []
-
-    # Act
-    results = await coordinator.process_batch(events)
-
-    # Assert
-    assert results == []
-    assert coordinator.processed_count == 0
-```
-
-#### TDD Metrics and Monitoring
-
-**Code Quality Metrics**
-- Test coverage percentage (target: >90%)
-- Test-to-code ratio (aim for 1:1 or higher)
-- Number of assertions per test
-- Test execution time (keep tests fast)
-
-**TDD Workflow Health**
-- Percentage of code written test-first
-- Average time between test writing and implementation
-- Test failure rate during development
-- Bug detection rate before production
-
-#### Common TDD Pitfalls to Avoid
 
 **Don't Test Everything**
 - Avoid testing language features and framework code
@@ -412,45 +264,6 @@ async def test_coordinator_handles_empty_event_list(self):
 6. Test package in isolated environment
 7. Publish to PyPI
 8. Create git tag for release
-
-### TDD-Enhanced Development Workflow
-
-**For New Features:**
-1. Create feature branch from main
-2. **TDD Phase**: Write failing tests for the new functionality
-   - Define acceptance criteria through tests
-   - Include unit, integration, and edge case tests
-   - Ensure tests fail for expected reasons
-3. Implement minimal code to make tests pass
-4. Refactor code while maintaining test coverage
-5. Ensure all tests pass and coverage targets are met (>90%)
-6. Run code quality checks (Black, MyPy, Flake8)
-7. Submit pull request with test results and coverage reports
-8. Code review focusing on both production and test code
-9. Merge and tag release if necessary
-
-**For Bug Fixes:**
-1. Create bugfix branch from main
-2. **TDD Phase**: Write test that reproduces the bug
-3. Verify test fails before fixing
-4. Fix bug with minimal changes
-5. Ensure test passes and no regressions introduced
-6. Run full test suite and quality checks
-7. Submit pull request with bug reproduction test
-
-**Daily TDD Routine:**
-- Start each development session with `pytest` to ensure clean state
-- Write tests before implementation whenever possible
-- Run tests frequently during development (every 5-10 minutes)
-- End each session with full test suite and coverage check
-- Commit frequently with descriptive messages mentioning test status
-
-**Quality Gates:**
-- No new code without corresponding tests
-- Minimum 90% test coverage required for merge
-- All tests must pass in CI/CD pipeline
-- Code review includes test quality assessment
-- Performance tests must pass for critical paths
 
 ### Quality Guidelines
 - **Consistency**: Maintain unified API naming and style

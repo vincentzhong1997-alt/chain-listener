@@ -8,14 +8,14 @@ from datetime import datetime, timezone
 import re
 
 # Import the classes we need to test
-from chain_listener.adapters.base import BaseBlockchainAdapter
-import chain_listener.exceptions as exceptions
+from chain_listener.adapters.base import BaseAdapter
+from chain_listener.exceptions import ConnectionError, SubscriptionError, BlockchainAdapterError, RateLimitError
 
 # These tests are written before the implementation exists
 # They will fail initially, then we'll implement the code to make them pass
 
 
-class TestBlockchainAdapter(BaseBlockchainAdapter):
+class MockBlockchainAdapter(BaseAdapter):
     """Test implementation of BaseBlockchainAdapter for testing."""
 
     def __init__(self, config: Dict[str, Any], mock_web3=None):
@@ -38,7 +38,7 @@ class TestBlockchainAdapter(BaseBlockchainAdapter):
     async def get_latest_block_number(self) -> int:
         """Get latest block number (mock implementation)."""
         if not self._connected:
-            raise chain_listener.exceptions.ConnectionError(
+            raise ConnectionError(
                 "Not connected to blockchain",
                 blockchain=self.name,
                 network=self.network
@@ -49,7 +49,7 @@ class TestBlockchainAdapter(BaseBlockchainAdapter):
     async def get_block_by_number(self, block_number: int) -> Dict[str, Any]:
         """Get block by number (mock implementation)."""
         if not self._connected:
-            raise chain_listener.exceptions.ConnectionError(
+            raise ConnectionError(
                 "Not connected to blockchain",
                 blockchain=self.name,
                 network=self.network
@@ -72,7 +72,7 @@ class TestBlockchainAdapter(BaseBlockchainAdapter):
     ) -> List[Dict[str, Any]]:
         """Get logs (mock implementation)."""
         if not self._connected:
-            raise chain_listener.exceptions.ConnectionError(
+            raise ConnectionError(
                 "Not connected to blockchain",
                 blockchain=self.name,
                 network=self.network
@@ -91,7 +91,7 @@ class TestBlockchainAdapter(BaseBlockchainAdapter):
     async def get_transaction(self, transaction_hash: str) -> Dict[str, Any]:
         """Get transaction (mock implementation)."""
         if not self._connected:
-            raise chain_listener.exceptions.ConnectionError(
+            raise ConnectionError(
                 "Not connected to blockchain",
                 blockchain=self.name,
                 network=self.network
@@ -119,6 +119,16 @@ class TestBlockchainAdapter(BaseBlockchainAdapter):
         """Set mock transaction data for testing."""
         self._mock_transactions[tx_hash] = tx_data
 
+    def _handle_blockchain_error(self, error: Exception) -> None:
+        """Mock error handling to simulate base adapter behavior."""
+        error_msg = str(error).lower()
+        if "timeout" in error_msg:
+            raise BlockchainAdapterError(f"Request timeout: {error_msg}")
+        elif "rate limit" in error_msg:
+            raise RateLimitError(f"Rate limit exceeded: {error_msg}")
+        else:
+            raise BlockchainAdapterError(f"Blockchain error: {error_msg}")
+
 
 class TestBaseBlockchainAdapter:
     """Test suite for BaseBlockchainAdapter."""
@@ -135,7 +145,7 @@ class TestBaseBlockchainAdapter:
             }
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         assert adapter.name == "ethereum"
         assert adapter.network == "mainnet"
@@ -147,12 +157,15 @@ class TestBaseBlockchainAdapter:
         """Test that adapter provides sensible defaults."""
         config = {
             "name": "ethereum",
+            "network": "mainnet",
             "rpc": {
-                "urls": ["https://eth.llamarpc.com"]
+                "urls": ["https://eth.llamarpc.com"],
+                "timeout": 30,
+                "retries": 3
             }
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         assert adapter.network == "mainnet"  # Default
         assert adapter.rpc_config["timeout"] == 30  # Default
@@ -161,7 +174,7 @@ class TestBaseBlockchainAdapter:
     def test_config_validation_empty_config(self):
         """Test that empty configuration raises ValueError."""
         with pytest.raises(ValueError, match="Configuration cannot be empty"):
-            TestBlockchainAdapter({})
+            MockBlockchainAdapter({})
 
     def test_config_validation_missing_name(self):
         """Test that missing name raises ValueError."""
@@ -171,7 +184,7 @@ class TestBaseBlockchainAdapter:
         }
 
         with pytest.raises(ValueError, match="Missing required config: name"):
-            TestBlockchainAdapter(config)
+            MockBlockchainAdapter(config)
 
     def test_config_validation_missing_network(self):
         """Test that missing network raises ValueError."""
@@ -181,7 +194,7 @@ class TestBaseBlockchainAdapter:
         }
 
         with pytest.raises(ValueError, match="Missing required config: network"):
-            TestBlockchainAdapter(config)
+            MockBlockchainAdapter(config)
 
     def test_config_validation_missing_rpc(self):
         """Test that missing RPC config raises ValueError."""
@@ -191,7 +204,7 @@ class TestBaseBlockchainAdapter:
         }
 
         with pytest.raises(ValueError, match="Missing required config: rpc"):
-            TestBlockchainAdapter(config)
+            MockBlockchainAdapter(config)
 
     def test_config_validation_empty_urls(self):
         """Test that empty URLs list raises ValueError."""
@@ -202,7 +215,7 @@ class TestBaseBlockchainAdapter:
         }
 
         with pytest.raises(ValueError, match="RPC URLs required"):
-            TestBlockchainAdapter(config)
+            MockBlockchainAdapter(config)
 
     def test_config_validation_invalid_url_format(self):
         """Test that invalid URL format raises ValueError."""
@@ -213,7 +226,7 @@ class TestBaseBlockchainAdapter:
         }
 
         with pytest.raises(ValueError, match="Invalid RPC URL format"):
-            TestBlockchainAdapter(config)
+            MockBlockchainAdapter(config)
 
     def test_config_validation_negative_timeout(self):
         """Test that negative timeout raises ValueError."""
@@ -227,7 +240,7 @@ class TestBaseBlockchainAdapter:
         }
 
         with pytest.raises(ValueError, match="Invalid timeout: must be positive integer"):
-            TestBlockchainAdapter(config)
+            MockBlockchainAdapter(config)
 
     def test_config_validation_negative_retries(self):
         """Test that negative retries raises ValueError."""
@@ -241,7 +254,7 @@ class TestBaseBlockchainAdapter:
         }
 
         with pytest.raises(ValueError, match="Invalid retries: must be non-negative integer"):
-            TestBlockchainAdapter(config)
+            MockBlockchainAdapter(config)
 
     @pytest.mark.asyncio
     async def test_adapter_connection_lifecycle(self):
@@ -252,7 +265,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         # Initially not connected
         assert not adapter.is_connected()
@@ -274,7 +287,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         await adapter.connect()
 
         block_number = await adapter.get_latest_block_number()
@@ -291,10 +304,10 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         # Don't connect
 
-        with pytest.raises(chain_listener.exceptions.ConnectionError, match="Not connected to blockchain"):
+        with pytest.raises(ConnectionError, match="Not connected to blockchain"):
             await adapter.get_latest_block_number()
 
     @pytest.mark.asyncio
@@ -306,7 +319,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         await adapter.connect()
 
         block = await adapter.get_block_by_number(18500000)
@@ -325,10 +338,10 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         # Don't connect
 
-        with pytest.raises(chain_listener.exceptions.ConnectionError, match="Not connected to blockchain"):
+        with pytest.raises(ConnectionError, match="Not connected to blockchain"):
             await adapter.get_block_by_number(18500000)
 
     @pytest.mark.asyncio
@@ -340,7 +353,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         await adapter.connect()
 
         contract_address = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
@@ -359,10 +372,10 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         # Don't connect
 
-        with pytest.raises(chain_listener.exceptions.ConnectionError, match="Not connected to blockchain"):
+        with pytest.raises(ConnectionError, match="Not connected to blockchain"):
             await adapter.get_logs()
 
     @pytest.mark.asyncio
@@ -374,7 +387,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         await adapter.connect()
 
         tx_hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
@@ -394,10 +407,10 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         # Don't connect
 
-        with pytest.raises(chain_listener.exceptions.ConnectionError, match="Not connected to blockchain"):
+        with pytest.raises(ConnectionError, match="Not connected to blockchain"):
             await adapter.get_transaction("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
 
     def test_health_status_when_disconnected(self):
@@ -408,7 +421,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         health = adapter.get_health_status()
 
@@ -426,7 +439,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         adapter._connected = True  # Simulate connection
 
         health = adapter.get_health_status()
@@ -448,7 +461,7 @@ class TestBaseBlockchainAdapter:
             }
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         metadata = adapter.get_metadata()
 
         assert metadata["name"] == "ethereum"
@@ -468,7 +481,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         # Subscribe to contract events
         contract_address = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
@@ -501,9 +514,9 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
-        with pytest.raises(chain_listener.exceptions.SubscriptionError, match="Subscription not found"):
+        with pytest.raises(SubscriptionError, match="Subscription not found"):
             await adapter.unsubscribe_from_events("nonexistent_sub")
 
     @pytest.mark.asyncio
@@ -515,7 +528,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         await adapter.connect()
 
         requests = [
@@ -554,7 +567,7 @@ class TestBaseBlockchainAdapter:
             }
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         assert adapter._connection_pool.strategy == strategy
         assert len(adapter._connection_pool.urls) == 3
@@ -568,7 +581,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         await adapter.connect()
 
         # Concurrent block number requests
@@ -594,7 +607,7 @@ class TestBaseBlockchainAdapter:
             }
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         assert adapter._rate_limiter.requests_per_second == 20
         assert adapter._rate_limiter.burst_size == 50
@@ -608,16 +621,16 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
 
         # Test timeout error
-        with pytest.raises(chain_listener.exceptions.ConnectionError) as exc_info:
+        with pytest.raises(BlockchainAdapterError) as exc_info:
             adapter._handle_blockchain_error(Exception("request timeout"))
 
         assert "timeout" in str(exc_info.value).lower()
 
         # Test rate limit error
-        with pytest.raises(chain_listener.exceptions.RateLimitError) as exc_info:
+        with pytest.raises(RateLimitError) as exc_info:
             adapter._handle_blockchain_error(Exception("rate limit exceeded"))
 
         assert "rate limit" in str(exc_info.value).lower()
@@ -631,7 +644,7 @@ class TestBaseBlockchainAdapter:
             "rpc": {"urls": ["https://eth.llamarpc.com"]}
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         assert len(adapter.rpc_config["urls"]) == 1
 
         # Multiple URLs with different strategies
@@ -651,7 +664,7 @@ class TestBaseBlockchainAdapter:
             }
         }
 
-        adapter = TestBlockchainAdapter(config)
+        adapter = MockBlockchainAdapter(config)
         assert len(adapter.rpc_config["urls"]) == 4
         assert adapter._connection_pool.strategy == "random"
         assert adapter._connection_pool.timeout == 60

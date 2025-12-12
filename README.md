@@ -13,50 +13,6 @@ A universal multi-chain distributed blockchain listener SDK that provides reusab
 
 ## Quick Start
 
-### Simple Mode (Standalone)
-
-```python
-from chain_listener import QuickListener
-
-# Create listener
-listener = QuickListener.from_config("config.yaml")
-
-# Register contract and event handler
-listener.add_contract(
-    chain='ethereum',
-    address='0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'  # WBTC
-).on_event('Transfer', handle_transfer)
-
-# Start listening (async, non-blocking)
-import asyncio
-listener_task = await listener.start_async()
-
-# Continue with other tasks...
-```
-
-### Distributed Mode
-
-```python
-from chain_listener import DistributedListener
-import aioredis
-from motor.motor_asyncio import AsyncIOMotorClient
-
-# Create listener
-listener = DistributedListener.from_config("production_config.yaml")
-
-# Register clients
-listener.register_redis_client(aioredis.from_url("redis://localhost:6379/0"))
-listener.register_mongodb_client(AsyncIOMotorClient("mongodb://localhost:27017"))
-
-# Register contract and event handler
-listener.add_contract(
-    chain='ethereum',
-    address='0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'
-).on_event('Transfer', handle_transfer)
-
-# Start distributed listening
-listener_task = await listener.start_distributed_async()
-```
 
 ## Documentation
 
@@ -78,21 +34,6 @@ poetry install
 
 # Activate virtual environment
 poetry env activate
-```
-
-### Testing
-
-This project follows Test-Driven Development (TDD) principles and has comprehensive test coverage.
-
-```bash
-# Run tests with coverage
-poetry run pytest --cov=chain_listener --cov-report=html
-
-# Run specific test file
-poetry runpytest tests/unit/test_events.py -v
-
-# Run all tests
-poetry run pytest
 ```
 
 ### Code Quality

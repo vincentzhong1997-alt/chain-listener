@@ -55,11 +55,11 @@ def test_blockchain_event_validation():
     from chain_listener.models.events import BlockchainEvent
 
     # Missing required fields should raise ValidationError
-    with pytest.raises(Exception):  # ValidationError from Pydantic
+    with pytest.raises(ValueError):  # Pydantic raises ValueError for validation errors
         BlockchainEvent()
 
     # Invalid transaction hash should raise ValidationError
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         BlockchainEvent(
             transaction_hash="short",  # Too short to pass validation
             contract_address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
@@ -68,7 +68,7 @@ def test_blockchain_event_validation():
         )
 
     # Invalid contract address should raise ValidationError
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         BlockchainEvent(
             transaction_hash="0x" + "0" * 64,
             contract_address="0xinvalid",  # Invalid EVM format
@@ -77,7 +77,7 @@ def test_blockchain_event_validation():
         )
 
     # Negative block number should raise ValidationError
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         BlockchainEvent(
             transaction_hash="0x" + "0" * 64,
             contract_address="0x" + "1" * 40,
@@ -186,7 +186,7 @@ def test_cross_chain_event_validation():
     from chain_listener.models.events import CrossChainEvent
 
     # Missing source_chain should raise ValidationError
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         CrossChainEvent(
             transaction_hash="0x" + "0" * 64,
             contract_address="0x" + "1" * 40,
@@ -196,7 +196,7 @@ def test_cross_chain_event_validation():
         )
 
     # Missing target_chain should raise ValidationError
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         CrossChainEvent(
             transaction_hash="0x" + "0" * 64,
             contract_address="0x" + "1" * 40,
@@ -206,7 +206,7 @@ def test_cross_chain_event_validation():
         )
 
     # Empty amount should raise ValidationError
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         CrossChainEvent(
             transaction_hash="0x" + "0" * 64,
             contract_address="0x" + "1" * 40,
@@ -419,7 +419,7 @@ def test_common_event_types(event_type: str):
     assert event.event_type == event_type
 
 
-@pytest.mark.parametrize("chain_name", ["ethereum", "bsc", "polygon", "arbitrum", "optimism"])
+@pytest.mark.parametrize("chain_name", ["ethereum", "polygon", "arbitrum", "optimism"])
 def test_common_chain_names(chain_name: str):
     """Test that common chain names are supported."""
     from chain_listener.models.events import BlockchainEvent
@@ -515,3 +515,100 @@ def test_event_time_series_ordering():
     assert len(sorted_events) == 3
     for i in range(1, len(sorted_events)):
         assert sorted_events[i].block_timestamp >= sorted_events[i-1].block_timestamp
+
+
+def test_raw_event_creation():
+    """Test that RawEvent can be created with valid data."""
+    from chain_listener.models.events import RawEvent, ChainType
+
+    raw_event = RawEvent(
+        chain_type=ChainType.ETHEREUM,
+        block_number=18500000,
+        block_hash="0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        transaction_hash="0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        log_index=5,
+        contract_address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+        raw_data={
+            "data": "0x000000000000000000000000000000000000000000000000de0b6b3a7640000",
+            "topics": [
+                "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                "0x000000000000000000000000abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+                "0x0000000000000000000000001234567890123456789012345678901234567890"
+            ]
+        },
+        timestamp=1640000000
+    )
+
+    assert raw_event.chain_type == ChainType.ETHEREUM
+    assert raw_event.block_number == 18500000
+    assert raw_event.block_hash == "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    assert raw_event.transaction_hash == "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    assert raw_event.log_index == 5
+    assert raw_event.contract_address == "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+    assert "data" in raw_event.raw_data
+    assert len(raw_event.raw_data["topics"]) == 3
+    assert raw_event.timestamp == 1640000000
+
+
+def test_decoded_event_creation():
+    """Test that DecodedEvent can be created with valid data."""
+    from chain_listener.models.events import DecodedEvent, ChainType
+
+    decoded_event = DecodedEvent(
+        chain_type=ChainType.ETHEREUM,
+        contract_address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+        event_name="Transfer",
+        parameters={
+            "from": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "to": "0x1234567890123456789012345678901234567890",
+            "value": 1000000000000000000
+        },
+        block_number=18500000,
+        transaction_hash="0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+        log_index=5,
+        timestamp=1640000000
+    )
+
+    assert decoded_event.chain_type == ChainType.ETHEREUM
+    assert decoded_event.contract_address == "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+    assert decoded_event.event_name == "Transfer"
+    assert decoded_event.parameters["from"] == "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+    assert decoded_event.parameters["to"] == "0x1234567890123456789012345678901234567890"
+    assert decoded_event.parameters["value"] == 1000000000000000000
+    assert decoded_event.block_number == 18500000
+    assert decoded_event.transaction_hash == "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+    assert decoded_event.log_index == 5
+    assert decoded_event.timestamp == 1640000000
+
+
+def test_raw_event_different_chain_types():
+    """Test RawEvent with different chain types."""
+    from chain_listener.models.events import RawEvent, ChainType
+
+    # Test with Solana
+    solana_event = RawEvent(
+        chain_type=ChainType.SOLANA,
+        block_number=150000000,
+        block_hash="5j7s8LxXJ5mK8n9Q3pL6V8rH2tE3wA1dS4xY9bN6cZ2gF5vN8mK3pLqR6tE9wQ",
+        transaction_hash="2j7s8LxXJ5mK8n9Q3pL6V8rH2tE3wA1dS4xY9bN6cZ2gF5vN8mK3pLqR6tE9wQ",
+        log_index=0,
+        contract_address="TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        raw_data={"chain": "solana"},
+        timestamp=1640000000
+    )
+
+    assert solana_event.chain_type == ChainType.SOLANA
+
+    # Test with Tron
+    tron_event = RawEvent(
+        chain_type=ChainType.TRON,
+        block_number=45000000,
+        block_hash="0000000000000000015c51293bf64f797e03c8c5ce5b1f2c5e3a86a1bfb11b2e0",
+        transaction_hash="c1e8250e52209010675505a87528dbb91349d2484da8a2a7a8741c4a5a1b4d49",
+        log_index=0,
+        contract_address="TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+        raw_data={"chain": "tron"},
+        timestamp=1640000000
+    )
+
+    assert tron_event.chain_type == ChainType.TRON

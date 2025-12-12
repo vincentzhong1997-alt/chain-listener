@@ -16,7 +16,6 @@ graph TB
 
         subgraph "Chain Adapters (Unified: Connection + Decoding)"
             ETH[Ethereum Adapter]
-            BSC[BSC Adapter]
             SOL[Solana Adapter]
             TRON[Tron Adapter]
         end
@@ -33,7 +32,6 @@ graph TB
 
     subgraph "External Systems"
         ETH_RPC[Ethereum RPC]
-        BSC_RPC[BSC RPC]
         SOL_RPC[Solana RPC]
         TRON_RPC[Tron API]
         UserCallbacks[User Callback Functions]
@@ -43,12 +41,10 @@ graph TB
     Coordinator --> CallbackRegistry
 
     AdapterRegistry --> ETH
-    AdapterRegistry --> BSC
     AdapterRegistry --> SOL
     AdapterRegistry --> TRON
 
     ETH --> ETH_RPC
-    BSC --> BSC_RPC
     SOL --> SOL_RPC
     TRON --> TRON_RPC
 
@@ -63,7 +59,6 @@ graph TB
 
     %% Note: Each Chain Adapter includes both connection management and event decoding capabilities
     classDef ETH fill:#e1f5fe
-    classDef BSC fill:#e8f5e8
     classDef SOL fill:#fff3e0
     classDef TRON fill:#fce4ec
 ```
@@ -226,7 +221,6 @@ class DecodedEvent:
 
 **具体实现**:
 - **EthereumAdapter**: Web3.py集成，支持EVM兼容链
-- **BSCAdapter**: 基于EthereumAdapter扩展，优化BSC特性
 - **SolanaAdapter**: AsyncClient集成，Anchor IDL解码
 - **TronAdapter**: HTTP客户端，TRC-20/TRC-721事件处理
 
@@ -394,7 +388,7 @@ await listener.start()
 ### 链类型适配策略
 
 **兼容链映射机制**:
-- **EVM兼容链** (Ethereum, BSC, Polygon): 共享以太坊适配器实例
+- **EVM兼容链** (Ethereum, Polygon): 共享以太坊适配器实例
 - **独立链** (Solana, Tron): 使用专用适配器
 
 ### 适配器实现策略
@@ -610,16 +604,6 @@ chains:
         address: "0x..."
         abi: "..."
         events: ["Transfer"]
-
-  bsc:
-    enabled: true
-    chain_type: "evm"  # 使用Ethereum适配器
-    chain_id: 56  # BSC主网
-    confirmation_blocks: 10
-    polling_interval: 3000
-    rpc_urls:
-      - url: "https://bsc-dataseed1.binance.org"
-        priority: 1
 
   solana:
     enabled: true
@@ -928,15 +912,11 @@ class ReorgDetector:
     1.  **BaseAdapter 抽象化**
         * 统一接口定义
         * 链类型映射
-    2.  **BSC 适配器**
-        * 基于 Ethereum 扩展
-        * BSC 特定优化
-    3.  **适配器注册表**
+    2.  **适配器注册表**
         * 动态注册机制
         * 多链管理
 
 > **🏁 里程碑检查:**
-> * ✅ BSC 事件监听工作
 > * ✅ 适配器框架可扩展
 
 **Sprint 6 (Week 6): 多链协调**
@@ -1065,7 +1045,7 @@ pytest tests/performance/ -v
 
 ### Success Criteria
 
-1. **功能完整性**: 支持Ethereum、BSC、Solana、Tron四个链
+1. **功能完整性**: 支持Ethereum、Solana、Tron三个链
 2. **性能指标**: 单实例处理能力 >100 TPS
 3. **可靠性**: 99.9%的事件处理成功率
 4. **易用性**: 简单的API设计，5行代码可启动监听

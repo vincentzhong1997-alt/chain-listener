@@ -6,7 +6,8 @@ testnet networks, with comprehensive error handling and retry logic.
 """
 
 import asyncio
-from typing import Dict, List, Optional, Any, AsyncGenerator
+import logging
+from typing import Dict, List, Optional, Any, AsyncGenerator, Union, Callable
 from datetime import datetime, timezone
 
 from web3 import Web3
@@ -17,7 +18,7 @@ from web3.exceptions import (
     ValidationError as Web3ValidationError
 )
 
-from chain_listener.adapters.base import BaseBlockchainAdapter
+from chain_listener.adapters.base import BaseAdapter, PriorityConnectionPool
 from chain_listener.exceptions import (
     BlockchainAdapterError,
     ConnectionError as ChainConnectionError,
@@ -28,36 +29,16 @@ from chain_listener.exceptions import (
 )
 
 
-class EthereumAdapter(BaseBlockchainAdapter):
+class EthereumAdapter(BaseAdapter):
     """Ethereum-specific blockchain adapter.
 
     Provides comprehensive Ethereum blockchain interaction capabilities including
     block queries, log filtering, transaction retrieval, and event streaming.
-    Supports mainnet, Goerli, Sepolia, and Holesky testnets.
     """
 
-    # Network configurations
-    NETWORK_CONFIGS = {
-        "mainnet": {
-            "chain_id": 1,
-            "block_time": 12,
-            "name": "Ethereum Mainnet"
-        },
-        "goerli": {
-            "chain_id": 5,
-            "block_time": 15,
-            "name": "Goerli Testnet"
-        },
-        "sepolia": {
-            "chain_id": 11155111,
-            "block_time": 12,
-            "name": "Sepolia Testnet"
-        },
-        "holesky": {
-            "chain_id": 17000,
-            "block_time": 12,
-            "name": "Holesky Testnet"
-        }
+    # Default configuration
+    DEFAULT_CONFIG = {
+        "block_time": 12
     }
 
     def __init__(self, config: Dict[str, Any]):
@@ -69,24 +50,114 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             ValueError: If network or configuration is invalid
         """
-        super().__init__(config)
+        # Custom initialization (don't call super().__init__ to avoid old config validation)
+        self._validate_config(config)
+
+        # Set basic properties (with defaults for optional fields)
+        self.name = config.get("name", "ethereum_adapter")
+        self.network = config.get("network", "mainnet")
+        self.rpc_config = config.get("rpc", {})
 
         # Validate Ethereum-specific configuration
         self._validate_ethereum_config(config)
 
-        # Set network-specific properties
-        network_config = self.NETWORK_CONFIGS[self.network]
-        self.chain_id = network_config["chain_id"]
-        self.block_time = network_config["block_time"]
+        # Set properties (allow user override)
+        self.block_time = config.get("block_time", self.DEFAULT_CONFIG["block_time"])
 
-        # Web3 instance (initialized in connect)
-        self._w3: Optional[Web3] = None
+        # Priority connection management
+        rpc_endpoints = config.get("rpc_endpoints", [])
+        max_retries = self.rpc_config.get("retries", 3)
+        self._connection_pool = PriorityConnectionPool(rpc_endpoints, max_retries)
+
+        # Web3 instances cache (one per endpoint)
+        self._web3_instances: Dict[str, Web3] = {}
 
         # Contract cache for event subscriptions
         self._contract_cache: Dict[str, Any] = {}
 
         # Event filter cache
         self._filter_cache: Dict[str, Any] = {}
+
+        # Rate limiting and logging
+        from ..adapters.base import RateLimiter
+        rate_limit_config = self.rpc_config.get("rate_limit", {})
+        self._rate_limiter = RateLimiter(
+            requests_per_second=rate_limit_config.get("requests_per_second", 10),
+            burst_size=rate_limit_config.get("burst_size", 20)
+        )
+
+        # Request tracking
+        self._request_count = 0
+        self._error_count = 0
+
+        self.logger = logging.getLogger(__name__)
+
+    def _validate_config(self, config: Dict[str, Any]) -> None:
+        """Validate adapter configuration for the new format.
+
+        Args:
+            config: Configuration dictionary
+
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        if not config:
+            raise ValueError("Configuration cannot be empty")
+        if "rpc_endpoints" not in config:
+            raise ValueError("Missing required config: rpc_endpoints")
+        if not config["rpc_endpoints"]:
+            raise ValueError("RPC URLs required")
+
+    def _get_or_create_web3_instance(self, url: str) -> Web3:
+        """获取或创建 Web3 实例（带缓存）"""
+        if url not in self._web3_instances:
+            self._web3_instances[url] = Web3(Web3.HTTPProvider(
+                url,
+                request_kwargs={
+                    "timeout": self.rpc_config.get("timeout", 30)
+                }
+            ))
+        return self._web3_instances[url]
+
+    async def _execute_with_priority_routing(self, operation: Callable, *args, **kwargs) -> Any:
+        """使用优先级路由执行操作"""
+        last_exception = None
+
+        # 尝试所有端点，最多 max_retries 次
+        max_retries = self._connection_pool.max_retries
+        for attempt in range(max_retries + 1):
+            # 获取当前最佳端点
+            url = self._connection_pool.get_best_endpoint()
+
+            # 获取 Web3 实例
+            w3 = self._get_or_create_web3_instance(url)
+
+            try:
+                # 执行操作
+                result = await self._execute_with_rate_limit(
+                    lambda: operation(w3, *args, **kwargs)
+                )
+
+                # 标记成功
+                self._connection_pool.mark_success(url)
+                return result
+
+            except Exception as e:
+                last_exception = e
+                # 标记失败
+                self._connection_pool.mark_failure(url)
+
+                # 如果不是最后一次尝试，记录日志并继续
+                if attempt < max_retries:
+                    self.logger.warning(
+                        f"RPC endpoint {url} failed (attempt {attempt + 1}/{max_retries + 1}): {e}"
+                    )
+                    continue
+
+        # 所有重试都失败了
+        raise BlockchainAdapterError(
+            f"All RPC endpoints failed after {max_retries} retries: {last_exception}"
+        )
 
     def _validate_ethereum_config(self, config: Dict[str, Any]) -> None:
         """Validate Ethereum-specific configuration.
@@ -97,15 +168,6 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             ValueError: If configuration is invalid
         """
-        network = config.get("network", "mainnet")
-
-        if network not in self.NETWORK_CONFIGS:
-            valid_networks = ", ".join(self.NETWORK_CONFIGS.keys())
-            raise ValueError(
-                f"Invalid Ethereum network: {network}. "
-                f"Valid networks are: {valid_networks}"
-            )
-
         # Validate RPC URLs for Ethereum
         rpc_config = config.get("rpc", {})
         urls = rpc_config.get("urls", [])
@@ -114,61 +176,35 @@ class EthereumAdapter(BaseBlockchainAdapter):
             if not url.startswith(("http://", "https://")):
                 raise ValueError(f"Invalid Ethereum RPC URL: {url}")
 
+    
     async def connect(self) -> None:
         """Connect to Ethereum network.
 
-        Raises:
-            ConnectionError: If connection fails
+        For HTTP RPC, connection is stateless and handled per-request.
+        This method is a no-op but kept for interface compatibility.
         """
-        async with self._connection_lock:
-            if self._connected:
-                return
-
-            # Get RPC endpoint from connection pool
-            rpc_url = self._get_next_connection()
-
-            try:
-                # Create Web3 instance
-                self._w3 = Web3(Web3.HTTPProvider(
-                    rpc_url,
-                    request_kwargs={
-                        "timeout": self.rpc_config.get("timeout", 30)
-                    }
-                ))
-
-                # Test connection
-                if not self._w3.is_connected():
-                    raise ChainConnectionError(
-                        "Failed to connect to Ethereum node",
-                        blockchain=self.name,
-                        network=self.network,
-                        endpoint=rpc_url
-                    )
-
-                # Verify chain ID matches expected network
-                chain_id = self._w3.eth.chain_id
-                if chain_id != self.chain_id:
-                    raise ChainConnectionError(
-                        f"Chain ID mismatch: expected {self.chain_id}, got {chain_id}",
-                        blockchain=self.name,
-                        network=self.network
-                    )
-
-                self._connected = True
-                self._connection_pool.mark_success(rpc_url)
-
-            except Exception as e:
-                self._connection_pool.mark_failed(rpc_url)
-                self._handle_blockchain_error(e)
+        # No-op for HTTP RPC - connection handled per-request
+        pass
 
     async def disconnect(self) -> None:
-        """Disconnect from Ethereum network."""
-        async with self._connection_lock:
-            self._connected = False
-            self._w3 = None
-            self._contract_cache.clear()
-            self._filter_cache.clear()
+        """Disconnect from Ethereum network.
 
+        For HTTP RPC, this just clears cached instances.
+        No actual connection to close since HTTP is stateless.
+        """
+        self._w3 = None
+        self._contract_cache.clear()
+        self._filter_cache.clear()
+
+    def is_connected(self) -> bool:
+        """Check if adapter is connected to Ethereum network.
+
+        Returns:
+            True if connected, False otherwise
+        """
+        return self._w3 is not None and self._w3.is_connected()
+
+    
     async def get_latest_block_number(self) -> int:
         """Get the latest block number from Ethereum.
 
@@ -178,19 +214,9 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             BlockchainAdapterError: If request fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
-
-        try:
-            return await self._execute_with_rate_limit(
-                self._w3.eth.block_number
-            )
-        except Exception as e:
-            self._handle_blockchain_error(e)
+        return await self._execute_with_priority_routing(
+            lambda w3: w3.eth.block_number
+        )
 
     async def get_block_by_number(self, block_number: int) -> Dict[str, Any]:
         """Get block information by number from Ethereum.
@@ -205,12 +231,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
             BlockNotFoundError: If block is not found
             BlockchainAdapterError: If request fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
+        # Direct execution - HTTP RPC doesn't need connection management
 
         try:
             block = await self._execute_with_rate_limit(
@@ -263,7 +284,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
 
     async def get_logs(
         self,
-        address: Optional[str] = None,
+        address: Optional[Union[str, List[str]]] = None,
         topics: Optional[List[str]] = None,
         from_block: Optional[int] = None,
         to_block: Optional[int] = None
@@ -271,7 +292,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
         """Get logs matching criteria from Ethereum.
 
         Args:
-            address: Contract address to filter by
+            address: Contract address to filter by (single address or list of addresses)
             topics: Event topics to filter by
             from_block: Starting block number
             to_block: Ending block number
@@ -282,14 +303,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             BlockchainAdapterError: If request fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
-
-        try:
+        def get_logs_operation(w3):
             # Build filter parameters
             filter_params = {}
             if address:
@@ -301,16 +315,10 @@ class EthereumAdapter(BaseBlockchainAdapter):
             if to_block is not None:
                 filter_params["toBlock"] = to_block
 
-            logs = await self._execute_with_rate_limit(
-                self._w3.eth.get_logs,
-                filter_params
-            )
+            return w3.eth.get_logs(filter_params)
 
-            # Convert to standardized format
-            return [self._convert_log_to_standard_format(log) for log in logs]
-
-        except Exception as e:
-            self._handle_blockchain_error(e)
+        logs = await self._execute_with_priority_routing(get_logs_operation)
+        return [self._convert_log_to_standard_format(log) for log in logs]
 
     def _convert_log_to_standard_format(self, log: Any) -> Dict[str, Any]:
         """Convert Web3 log to standard format.
@@ -346,12 +354,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
             TransactionError: If transaction is not found
             BlockchainAdapterError: If request fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
+        # Direct execution - HTTP RPC doesn't need connection management
 
         try:
             tx = await self._execute_with_rate_limit(
@@ -417,12 +420,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             SubscriptionError: If subscription fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
+        # Direct execution - HTTP RPC doesn't need connection management
 
         try:
             # Get or create contract instance
@@ -490,12 +488,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             BlockchainAdapterError: If streaming fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
+        # Direct execution - HTTP RPC doesn't need connection management
 
         current_block = from_block or await self.get_latest_block_number()
 
@@ -541,12 +534,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             BlockchainAdapterError: If any request fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
+        # Direct execution - HTTP RPC doesn't need connection management
 
         # Use base implementation with rate limiting
         return await super().batch_get_logs(requests)
@@ -563,7 +551,6 @@ class EthereumAdapter(BaseBlockchainAdapter):
         base_metadata.update({
             "chain_id": self.chain_id,
             "block_time": self.block_time,
-            "network_name": self.NETWORK_CONFIGS[self.network]["name"],
             "supports": {
                 **base_metadata["supports"],
                 "contract_events": True,
@@ -591,7 +578,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
         """
         base_health = super().get_health_status()
 
-        if self._connected and self._w3:
+        if self._w3 and self._w3.is_connected():
             try:
                 # Add Ethereum-specific health checks
                 sync_status = self._w3.eth.syncing
@@ -635,12 +622,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
             TransactionError: If transaction is not found
             BlockchainAdapterError: If request fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
+        # Direct execution - HTTP RPC doesn't need connection management
 
         try:
             receipt = await self._execute_with_rate_limit(
@@ -686,12 +668,7 @@ class EthereumAdapter(BaseBlockchainAdapter):
         Raises:
             BlockchainAdapterError: If request fails
         """
-        if not self._connected or not self._w3:
-            raise BlockchainAdapterError(
-                "Not connected to Ethereum network",
-                blockchain=self.name,
-                network=self.network
-            )
+        # Direct execution - HTTP RPC doesn't need connection management
 
         try:
             balance = await self._execute_with_rate_limit(

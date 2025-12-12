@@ -11,6 +11,48 @@ from typing import Dict, List, Optional, Union, Any, Set
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
 from enum import Enum
+from dataclasses import dataclass
+
+
+# Core event data structures as defined in technical solution
+class ChainType(str, Enum):
+    """Supported blockchain types."""
+    ETHEREUM = "ethereum"
+    BSC = "bsc"
+    SOLANA = "solana"
+    TRON = "tron"
+
+
+@dataclass
+class RawEvent:
+    """Raw event data structure as defined in technical solution.
+
+    Represents the raw event data from blockchain before decoding.
+    """
+    chain_type: ChainType
+    block_number: int
+    block_hash: str
+    transaction_hash: str
+    log_index: int
+    contract_address: str
+    raw_data: Dict[str, Any]  # Chain-specific raw data
+    timestamp: int
+
+
+@dataclass
+class DecodedEvent:
+    """Decoded event data structure as defined in technical solution.
+
+    Represents the event data after decoding with contract ABI.
+    """
+    chain_type: ChainType
+    contract_address: str
+    event_name: str
+    parameters: Dict[str, Any]  # Decoded event parameters
+    block_number: int
+    transaction_hash: str
+    log_index: int
+    timestamp: int
 
 
 class EventStatus(str, Enum):
@@ -122,7 +164,7 @@ class BlockchainEvent(BaseModel):
     @classmethod
     def validate_contract_address(cls, v):
         """Validate contract address format."""
-        from chain_listener.utils import validate_and_format_address
+        from chain_listener.utils.address import validate_and_format_address
 
         # For EVM chains starting with 0x, validate proper format
         if v.startswith("0x") and not (len(v) == 42 and all(c in "0123456789abcdefABCDEF" for c in v[2:])):

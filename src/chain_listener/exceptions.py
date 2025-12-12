@@ -147,50 +147,6 @@ class EventValidationError(EventProcessingError):
         self.value = value
 
 
-class DeduplicationError(ChainListenerError):
-    """Raised when event deduplication fails."""
-
-    def __init__(
-        self,
-        message: str,
-        event_hash: Optional[str] = None,
-        cache_key: Optional[str] = None,
-        **kwargs
-    ):
-        """Initialize deduplication error.
-
-        Args:
-            message: Human-readable error message
-            event_hash: Hash of the event that caused the error
-            cache_key: Cache key related to the error
-            **kwargs: Additional arguments for ChainListenerError
-        """
-        super().__init__(message, **kwargs)
-        self.event_hash = event_hash
-        self.cache_key = cache_key
-
-
-class DistributedCoordinationError(ChainListenerError):
-    """Raised when distributed coordination fails."""
-
-    def __init__(
-        self,
-        message: str,
-        instance_id: Optional[str] = None,
-        operation: Optional[str] = None,
-        **kwargs
-    ):
-        """Initialize distributed coordination error.
-
-        Args:
-            message: Human-readable error message
-            instance_id: ID of the instance that encountered the error
-            operation: Operation that failed (e.g., 'leader_election', 'lock_acquisition')
-            **kwargs: Additional arguments for ChainListenerError
-        """
-        super().__init__(message, **kwargs)
-        self.instance_id = instance_id
-        self.operation = operation
 
 
 class HealthCheckError(ChainListenerError):

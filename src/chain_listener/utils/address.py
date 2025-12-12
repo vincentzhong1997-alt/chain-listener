@@ -1,7 +1,7 @@
-"""Utility functions for the chain listener SDK.
+"""Address validation and formatting utilities.
 
-This module provides reusable utility functions for address validation,
-format conversion, and other common operations.
+This module provides utilities for validating and formatting blockchain addresses
+across different chains, with a focus on EVM-compatible addresses.
 """
 
 try:
@@ -29,7 +29,7 @@ def validate_and_format_address(address: str) -> str:
     if len(address) < 3:
         raise ValueError("Address must be at least 3 characters")
 
-    # EVM0@lb:!ŒŒ<
+    # EVM address handling
     if address.startswith("0x") and len(address) == 42 and WEB3_AVAILABLE:
         try:
             return Web3.to_checksum_address(address)
@@ -76,3 +76,36 @@ def normalize_evm_address(address: str) -> str:
         raise ValueError("Invalid EVM address format")
 
     return Web3.to_checksum_address(address)
+
+
+def is_valid_solana_address(address: str) -> bool:
+    """Check if an address is a valid Solana address format.
+
+    Args:
+        address: Address to validate
+
+    Returns:
+        True if valid Solana address format, False otherwise
+    """
+    if not address:
+        return False
+
+    # Solana addresses are typically 32-44 characters (base58 encoded)
+    # Basic validation - can be enhanced with actual base58 decoding
+    return len(address) >= 32 and len(address) <= 44
+
+
+def is_valid_tron_address(address: str) -> bool:
+    """Check if an address is a valid TRON address format.
+
+    Args:
+        address: Address to validate
+
+    Returns:
+        True if valid TRON address format, False otherwise
+    """
+    if not address:
+        return False
+
+    # TRON addresses start with 'T' and are 34 characters long
+    return address.startswith('T') and len(address) == 34

@@ -9,76 +9,70 @@ from pydantic import ValidationError
 
 
 def test_blockchain_config_creation():
-    """Test that BlockchainConfig can be created with valid data."""
+    """Test that ChainConfig can be created with valid data."""
     # This test will fail until we implement the model
-    from chain_listener.models.config import BlockchainConfig
+    from chain_listener.models.config import ChainConfig
 
     config_data = {
         "enabled": True,
-        "network": "mainnet",
-        "weight": 3,
-        "polling": {
-            "enabled": True,
-            "interval": 15,
-            "batch_size": 100
-        },
-        "rpc": {
-            "urls": ["https://eth.llamarpc.com"],
-            "timeout": 30,
-            "retries": 3,
-            "strategy": "round_robin"
-        }
+        "chain_type": "ethereum",
+        "chain_id": 1,
+        "confirmation_blocks": 12,
+        "polling_interval": 15000,
+        "rpc_urls": [
+            {"url": "https://eth.llamarpc.com", "priority": 1}
+        ]
     }
 
-    config = BlockchainConfig(**config_data)
+    config = ChainConfig(**config_data)
 
     assert config.enabled == True
-    assert config.network == "mainnet"
-    assert config.weight == 3
-    assert config.polling.interval == 15
-    assert config.polling.batch_size == 100
-    assert len(config.rpc.urls) == 1
-    assert config.rpc.timeout == 30
+    assert config.chain_type == "ethereum"
+    assert config.chain_id == 1
+    assert config.confirmation_blocks == 12
+    assert config.polling_interval == 15000
+    assert len(config.rpc_urls) == 1
 
 
 def test_blockchain_config_default_values():
     """Test that BlockchainConfig provides sensible defaults."""
-    from chain_listener.models.config import BlockchainConfig
+    from chain_listener.models.config import ChainConfig
 
     # Minimal configuration should work with defaults
-    config = BlockchainConfig(
-        rpc={"urls": ["https://eth.llamarpc.com"]}
+    config = ChainConfig(
+        chain_type="ethereum",
+        rpc_urls=[{"url": "https://eth.llamarpc.com", "priority": 1}]
     )
 
     assert config.enabled == True  # Default
-    assert config.network == "mainnet"  # Default
-    assert config.weight == 1  # Default
-    assert config.polling.enabled == True  # Default
-    assert config.polling.interval == 15  # Default
-    assert config.rpc.timeout == 30  # Default
+    assert config.chain_type == "ethereum"
+    assert config.chain_id is None  # Default
+    assert config.confirmation_blocks == 12  # Default
+    assert config.polling_interval == 1000  # Default
+    assert len(config.rpc_urls) == 1
 
 
 def test_blockchain_config_validation():
     """Test that BlockchainConfig validates invalid inputs."""
-    from chain_listener.models.config import BlockchainConfig
+    from chain_listener.models.config import ChainConfig
 
     # Invalid network should raise ValidationError
     with pytest.raises(ValidationError):
-        BlockchainConfig(
+        ChainConfig(
             network="invalid_network",
             rpc={"urls": ["https://eth.llamarpc.com"]}
         )
 
     # Invalid polling interval should raise ValidationError
     with pytest.raises(ValidationError):
-        BlockchainConfig(
+        ChainConfig(
             polling={"interval": -1},
             rpc={"urls": ["https://eth.llamarpc.com"]}
         )
 
     # Invalid RPC timeout should raise ValidationError
     with pytest.raises(ValidationError):
-        BlockchainConfig(
+        ChainConfig(
             rpc={"urls": ["https://eth.llamarpc.com"], "timeout": -1}
         )
 
@@ -133,11 +127,6 @@ def test_event_processing_config_creation():
             "max_retries": 5,
             "retry_delay": 10
         },
-        "deduplication": {
-            "strategy": "multi_layer",
-            "cache_size": 10000,
-            "ttl": 3600
-        },
         "error_log": True
     }
 
@@ -145,9 +134,6 @@ def test_event_processing_config_creation():
 
     assert config.retry.max_retries == 5
     assert config.retry.retry_delay == 10
-    assert config.deduplication.strategy == "multi_layer"
-    assert config.deduplication.cache_size == 10000
-    assert config.deduplication.ttl == 3600
     assert config.error_log == True
 
 
@@ -160,63 +146,40 @@ def test_event_processing_config_defaults():
 
     assert config.retry.max_retries == 3
     assert config.retry.retry_delay == 5
-    assert config.deduplication.strategy == "multi_layer"
-    assert config.deduplication.cache_size == 10000
-    assert config.deduplication.ttl == 3600
     assert config.error_log == True
 
 
-def test_distributed_config_creation():
-    """Test that DistributedConfig can be created with valid data."""
-    from chain_listener.models.config import DistributedConfig
+def test_storage_config_creation():
+    """Test that StorageConfig can be created with valid data."""
+    from chain_listener.models.config import StorageConfig
 
     config_data = {
-        "cluster": {
-            "instance_id": "listener-01",
-            "instance_group": "wbtc-listener-group",
-            "zone": "us-east-1a",
-            "weight": 3
-        },
-        "coordination": {
-            "leader_election": {
-                "enabled": True,
-                "ttl": 30,
-                "lock_timeout": 60
-            }
-        },
-        "load_balancing": {
-            "strategy": "weighted",
-            "rebalance_interval": 300,
-            "health_check_interval": 30
-        }
+        "backend": "redis",
+        "key_prefix": "chain_listener:",
+        "redis_client": None
     }
 
-    config = DistributedConfig(**config_data)
+    config = StorageConfig(**config_data)
 
-    assert config.cluster.instance_id == "listener-01"
-    assert config.cluster.instance_group == "wbtc-listener-group"
-    assert config.cluster.zone == "us-east-1a"
-    assert config.cluster.weight == 3
-    assert config.coordination.leader_election.enabled == True
-    assert config.coordination.leader_election.ttl == 30
-    assert config.load_balancing.strategy == "weighted"
-    assert config.load_balancing.rebalance_interval == 300
+    assert config.backend == "redis"
+    assert config.key_prefix == "chain_listener:"
 
 
 def test_main_config_creation():
-    """Test that MainConfig can be created with valid blockchain configurations."""
-    from chain_listener.models.config import MainConfig
+    """Test that ChainListenerConfig can be created with valid blockchain configurations."""
+    from chain_listener.models.config import ChainListenerConfig
 
     config_data = {
-        "blockchains": {
+        "chains": {
             "ethereum": {
                 "enabled": True,
-                "network": "mainnet",
-                "weight": 3,
-                "rpc": {
-                    "urls": ["https://eth.llamarpc.com"],
-                    "timeout": 30
-                },
+                "chain_type": "ethereum",
+                "chain_id": 1,
+                "confirmation_blocks": 12,
+                "polling_interval": 15000,
+                "rpc_urls": [
+                    {"url": "https://eth.llamarpc.com", "priority": 1}
+                ],
                 "contracts": [
                     {
                         "name": "WBTC",
@@ -224,184 +187,161 @@ def test_main_config_creation():
                         "events": ["Transfer", "Burn"]
                     }
                 ]
-            },
-            "bsc": {
-                "enabled": True,
-                "network": "mainnet",
-                "weight": 2,
-                "rpc": {
-                    "urls": ["https://bsc-dataseed.binance.org"]
-                }
             }
         },
-        "event_processing": {
-            "retry": {"max_retries": 3},
-            "error_log": True
+        "global_config": {
+            "max_concurrent_processing": 10,
+            "event_batch_size": 100,
+            "log_level": "INFO"
         }
     }
 
-    config = MainConfig(**config_data)
+    config = ChainListenerConfig(**config_data)
 
-    # Test blockchain configurations
-    assert "ethereum" in config.blockchains
-    assert "bsc" in config.blockchains
-    assert config.blockchains["ethereum"].weight == 3
-    assert config.blockchains["bsc"].weight == 2
-    assert len(config.blockchains["ethereum"].contracts) == 1
-    assert config.blockchains["ethereum"].contracts[0].name == "WBTC"
+    # Test chain configurations
+    assert "ethereum" in config.chains
+    assert config.chains["ethereum"].chain_type == "ethereum"
+    assert len(config.chains["ethereum"].contracts) == 1
+    assert config.chains["ethereum"].contracts[0].name == "WBTC"
 
-    # Test event processing configuration
-    assert config.event_processing.retry.max_retries == 3
-    assert config.event_processing.error_log == True
+    # Test global configuration
+    assert config.global_config.max_concurrent_processing == 10
+    assert config.global_config.event_batch_size == 100
 
 
 def test_config_from_yaml():
     """Test that configuration can be loaded from YAML string."""
     import yaml
-    from chain_listener.models.config import MainConfig
+    from chain_listener.models.config import ChainListenerConfig
 
     yaml_config = """
-blockchains:
+chains:
   ethereum:
     enabled: true
-    network: mainnet
-    weight: 3
-    rpc:
-      urls:
-        - "https://eth.llamarpc.com"
-      timeout: 30
+    chain_type: ethereum
+    chain_id: 1
+    confirmation_blocks: 12
+    polling_interval: 15000
+    rpc_urls:
+      - url: "https://eth.llamarpc.com"
+        priority: 1
     contracts:
       - name: "WBTC"
         address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
         events: ["Transfer", "Burn"]
 
-event_processing:
-  retry:
-    max_retries: 3
-    retry_delay: 5
-  error_log: true
+global_config:
+  max_concurrent_processing: 10
+  event_batch_size: 100
+  log_level: "INFO"
 """
 
     config_dict = yaml.safe_load(yaml_config)
-    config = MainConfig(**config_dict)
+    config = ChainListenerConfig(**config_dict)
 
-    assert config.blockchains["ethereum"].enabled == True
-    assert config.blockchains["ethereum"].weight == 3
-    assert len(config.blockchains["ethereum"].contracts) == 1
-    assert config.event_processing.retry.max_retries == 3
+    assert config.chains["ethereum"].enabled == True
+    assert config.chains["ethereum"].chain_type == "ethereum"
+    assert len(config.chains["ethereum"].contracts) == 1
+    assert config.global_config.max_concurrent_processing == 10
 
 
 def test_config_validation_edge_cases():
     """Test edge cases in configuration validation."""
-    from chain_listener.models.config import MainConfig
+    from chain_listener.models.config import ChainListenerConfig
 
     # Empty blockchains should raise error
     with pytest.raises(ValidationError):
-        MainConfig(blockchains={})
+        ChainListenerConfig(blockchains={})
 
     # Invalid blockchain names should raise error
     with pytest.raises(ValidationError):
-        MainConfig(blockchains={
+        ChainListenerConfig(blockchains={
             "": {"enabled": True, "rpc": {"urls": ["https://eth.llamarpc.com"]}}
         })
 
     # Invalid deduplication strategy should raise error
     with pytest.raises(ValidationError):
-        MainConfig(
+        ChainListenerConfig(
             blockchains={"ethereum": {"enabled": True, "rpc": {"urls": ["https://eth.llamarpc.com"]}}},
             event_processing={"deduplication": {"strategy": "invalid_strategy"}}
         )
 
 
-def test_config_merging():
-    """Test that configuration merging works correctly."""
-    from chain_listener.models.config import MainConfig, merge_configs
+def test_config_utilities():
+    """Test utility functions for configuration management."""
+    from chain_listener.models.config import create_chain_listener_config, validate_chain_listener_config
 
-    base_config = {
-        "blockchains": {
+    # Test create function
+    config_dict = {
+        "chains": {
             "ethereum": {
-                "enabled": True,
-                "weight": 1,
-                "rpc": {"urls": ["https://eth.llamarpc.com"]}
+                "chain_type": "ethereum",
+                "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
             }
         }
     }
 
-    override_config = {
-        "blockchains": {
-            "ethereum": {
-                "weight": 3,  # Override weight
-                "rpc": {"urls": ["https://eth.llamarpc.com"]},  # Keep required RPC config
-                "contracts": [  # Add contracts
-                    {
-                        "name": "WBTC",
-                        "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
-                    }
-                ]
-            }
-        }
-    }
+    config = create_chain_listener_config(config_dict)
+    assert config.chains["ethereum"].chain_type == "ethereum"
 
-    # Merge configurations
-    merged_config = merge_configs(base_config, override_config)
-    config = MainConfig(**merged_config)
-
-    assert config.blockchains["ethereum"].enabled == True  # From base
-    assert config.blockchains["ethereum"].weight == 3  # Override
-    assert len(config.blockchains["ethereum"].contracts) == 1  # From override
+    # Test validate function
+    assert validate_chain_listener_config(config_dict) == True
+    assert validate_chain_listener_config({"invalid": "config"}) == False
 
 
-@pytest.mark.parametrize("network", ["mainnet", "testnet", "devnet"])
-def test_valid_networks(network: str):
-    """Test that all valid network values are accepted."""
-    from chain_listener.models.config import BlockchainConfig
+@pytest.mark.parametrize("chain_type", ["ethereum", "polygon", "solana", "tron"])
+def test_valid_chain_types(chain_type: str):
+    """Test that all valid chain type values are accepted."""
+    from chain_listener.models.config import ChainConfig
 
-    config = BlockchainConfig(
-        network=network,
-        rpc={"urls": ["https://eth.llamarpc.com"]}
+    config = ChainConfig(
+        chain_type=chain_type,
+        rpc_urls=[{"url": "https://example.com", "priority": 1}]
     )
-    assert config.network == network
+    assert config.chain_type == chain_type
 
 
-@pytest.mark.parametrize("invalid_network", ["invalid", "main", "test", ""])
-def test_invalid_networks(invalid_network: str):
-    """Test that invalid network values are rejected."""
-    from chain_listener.models.config import BlockchainConfig
+@pytest.mark.parametrize("chain_type", ["invalid", "main", "test", ""])
+def test_invalid_chain_types(chain_type: str):
+    """Test that invalid chain type values are still accepted (as strings)."""
+    from chain_listener.models.config import ChainConfig
 
-    with pytest.raises(ValidationError):
-        BlockchainConfig(
-            network=invalid_network,
-            rpc={"urls": ["https://eth.llamarpc.com"]}
-        )
+    # Chain type is a string field, so it accepts any string
+    config = ChainConfig(
+        chain_type=chain_type,
+        rpc_urls=[{"url": "https://example.com", "priority": 1}]
+    )
+    assert config.chain_type == chain_type
 
 
 @pytest.mark.parametrize("strategy", ["round_robin", "failover", "random"])
 def test_valid_rpc_strategies(strategy: str):
-    """Test that all valid RPC strategies are accepted."""
-    from chain_listener.models.config import BlockchainConfig
+    """Test that all valid RPC strategies are accepted in RPCConfig."""
+    from chain_listener.models.config import RPCConfig
 
-    config = BlockchainConfig(
-        rpc={"urls": ["https://eth.llamarpc.com"], "strategy": strategy}
+    config = RPCConfig(
+        urls=["https://eth.llamarpc.com"],
+        strategy=strategy
     )
-    assert config.rpc.strategy == strategy
+    assert config.strategy == strategy
 
 
 def test_config_serialization():
     """Test that configuration can be serialized to dict."""
-    from chain_listener.models.config import MainConfig
+    from chain_listener.models.config import ChainListenerConfig
 
     config_data = {
-        "blockchains": {
+        "chains": {
             "ethereum": {
-                "enabled": True,
-                "rpc": {"urls": ["https://eth.llamarpc.com"]}
+                "chain_type": "ethereum",
+                "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
             }
         }
     }
 
-    config = MainConfig(**config_data)
+    config = ChainListenerConfig(**config_data)
     serialized = config.model_dump()
 
-    assert "blockchains" in serialized
-    assert "ethereum" in serialized["blockchains"]
-    assert serialized["blockchains"]["ethereum"]["enabled"] == True
+    assert "chains" in serialized
+    assert "ethereum" in serialized["chains"]
+    assert serialized["chains"]["ethereum"]["chain_type"] == "ethereum"

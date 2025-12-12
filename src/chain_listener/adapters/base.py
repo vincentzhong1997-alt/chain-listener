@@ -9,6 +9,7 @@ import asyncio
 import re
 import time
 import hashlib
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Callable, AsyncGenerator, Union
@@ -134,7 +135,112 @@ class ConnectionPool:
             pass
 
 
-class BaseBlockchainAdapter(ABC):
+class PriorityConnectionPool:
+    """Manages RPC endpoints with priority and intelligent failover."""
+
+    def __init__(self, endpoints_with_priority: List[tuple], max_retries: int = 3):
+        """
+        Initialize priority connection pool.
+
+        Args:
+            endpoints_with_priority: List of (url, priority) tuples
+            max_retries: Maximum number of retries before marking endpoint as failed
+        """
+        # 按优先级排序（数字越小优先级越高）
+        self.endpoints = sorted(endpoints_with_priority, key=lambda x: x[1])
+        self.max_retries = max_retries
+
+        # 端点统计信息
+        self.endpoint_stats = {
+            url: {
+                'consecutive_failures': 0,      # 连续失败次数
+                'total_failures': 0,           # 总失败次数
+                'last_failure_time': None,     # 最后失败时间
+                'marked_failed': False,        # 是否标记为失败
+                'cooling_until': None,         # 冷却截止时间
+                'success_count': 0             # 成功次数
+            }
+            for url, _ in self.endpoints
+        }
+
+    def get_best_endpoint(self) -> str:
+        """获取当前可用的最佳端点"""
+        now = time.time()
+
+        for url, priority in self.endpoints:
+            stats = self.endpoint_stats[url]
+
+            # 检查是否在冷却期
+            if stats['cooling_until'] and now < stats['cooling_until']:
+                continue
+
+            # 如果已标记为失败，跳过
+            if stats['marked_failed']:
+                continue
+
+            # 这个端点可用
+            return url
+
+        # 所有端点都不可用，返回最高优先级的（强制使用）
+        return self.endpoints[0][0]
+
+    def mark_success(self, url: str) -> None:
+        """标记请求成功，重置失败计数"""
+        if url not in self.endpoint_stats:
+            return
+
+        stats = self.endpoint_stats[url]
+        stats['consecutive_failures'] = 0
+        stats['success_count'] += 1
+
+        # 从失败状态恢复
+        if stats['marked_failed']:
+            stats['marked_failed'] = False
+            stats['cooling_until'] = None
+            logger = logging.getLogger(__name__)
+            logger.info(f"RPC endpoint {url} recovered from failed state")
+
+    def mark_failure(self, url: str) -> None:
+        """标记请求失败"""
+        if url not in self.endpoint_stats:
+            return
+
+        stats = self.endpoint_stats[url]
+        stats['consecutive_failures'] += 1
+        stats['total_failures'] += 1
+        stats['last_failure_time'] = time.time()
+
+        # 只有连续失败次数达到用户配置的重试次数才标记为失败
+        if stats['consecutive_failures'] >= self.max_retries:
+            stats['marked_failed'] = True
+            # 指数退避冷却时间（最大5分钟）
+            failure_excess = stats['consecutive_failures'] - self.max_retries
+            cooling_time = min(300, 30 * (2 ** failure_excess))
+            stats['cooling_until'] = time.time() + cooling_time
+
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                f"RPC endpoint {url} marked as failed after {self.max_retries} retries. "
+                f"Cooling for {cooling_time} seconds"
+            )
+
+    def get_health_status(self) -> dict:
+        """获取所有端点的健康状态"""
+        return {
+            url: {
+                'priority': priority,
+                'consecutive_failures': stats['consecutive_failures'],
+                'total_failures': stats['total_failures'],
+                'success_count': stats['success_count'],
+                'marked_failed': stats['marked_failed'],
+                'cooling_until': stats['cooling_until'],
+                'success_rate': stats['success_count'] / max(1, stats['success_count'] + stats['total_failures'])
+            }
+            for (url, priority), stats in zip(self.endpoints, self.endpoint_stats.values())
+        }
+
+
+class BaseAdapter(ABC):
     """Abstract base class for blockchain adapters.
 
     Provides common functionality for connection management, rate limiting,
@@ -166,7 +272,6 @@ class BaseBlockchainAdapter(ABC):
             retries=self.rpc_config.get("retries", 3)
         )
 
-        self._connected = False
         self._connection_lock = asyncio.Lock()
 
         # Rate limiting
@@ -235,7 +340,8 @@ class BaseBlockchainAdapter(ABC):
         Returns:
             True if connected, False otherwise
         """
-        return self._connected
+        # Default implementation - subclasses should override
+        return True
 
     @abstractmethod
     async def connect(self) -> None:
@@ -307,7 +413,7 @@ class BaseBlockchainAdapter(ABC):
     @abstractmethod
     async def get_logs(
         self,
-        address: Optional[str] = None,
+        address: Optional[Union[str, List[str]]] = None,
         topics: Optional[List[str]] = None,
         from_block: Optional[Union[int, str]] = None,
         to_block: Optional[Union[int, str]] = None
@@ -315,7 +421,7 @@ class BaseBlockchainAdapter(ABC):
         """Get logs matching criteria.
 
         Args:
-            address: Contract address to filter by
+            address: Contract address to filter by (single address or list of addresses)
             topics: Event topics to filter by
             from_block: Starting block number or 'latest'
             to_block: Ending block number or 'latest'
