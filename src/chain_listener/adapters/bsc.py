@@ -166,48 +166,6 @@ class BSCAdapter(EthereumAdapter):
 
         return base_metadata
 
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get BSC adapter health status.
-
-        Returns:
-            Health status dictionary with BSC-specific metrics
-        """
-        base_health = super().get_health_status()
-
-        if self._connected and self._w3:
-            try:
-                # Add BSC-specific health checks
-                base_health.update({
-                    "network_type": "BSC",
-                    "native_token": "BNB",
-                    "fast_blocks": True,
-                    "low_gas_fees": True,
-                    "connected_chain_id": self._w3.eth.chain_id,
-                    "latest_block": self._w3.eth.block_number
-                })
-
-                # BSC-specific network information
-                if self.network == "mainnet":
-                    base_health.update({
-                        "explorer_urls": [
-                            "https://bscscan.com",
-                            "https://explorer.binance.org"
-                        ]
-                    })
-                elif self.network == "testnet":
-                    base_health.update({
-                        "explorer_urls": [
-                            "https://testnet.bscscan.com",
-                            "https://explorer.binance.org/smart-testnet"
-                        ]
-                    })
-
-            except Exception:
-                # Don't fail health check due to network issues
-                pass
-
-        return base_health
-
     async def get_gas_price(self) -> Dict[str, Any]:
         """Get current gas price information for BSC.
 
