@@ -33,12 +33,11 @@ def temp_ethereum_config_file():
                 "confirmation_blocks": 1,
                 "polling_interval": 100,  # Fast for testing
                 "enabled": True,
-                "rpc_urls": [
-                    {
-                        "url": "https://eth.llamarpc.com",
-                        "priority": 1
-                    }
-                ],
+                "rpc": {
+                    "urls": ["https://eth.llamarpc.com"],
+                    "timeout": 30,
+                    "retries": 3
+                },
                 "contracts": [
                     {
                         "name": "TestToken",
@@ -82,7 +81,7 @@ class TestEndToEndFlow:
             assert listener is not None
             assert "ethereum" in listener.config.chains
             assert listener.config.chains["ethereum"].chain_type == "ethereum"
-            assert not listener._is_listening
+            assert not listener.is_listening
 
             # Register a callback
             events_received = []
@@ -100,16 +99,19 @@ class TestEndToEndFlow:
             # Test lifecycle: start → stop
             with patch.object(listener._adapter_registry, 'connect_all') as mock_connect:
                 await listener.start_listening()
-                assert listener._is_listening
+                assert listener.is_listening
                 mock_connect.assert_called_once()
 
             with patch.object(listener._adapter_registry, 'disconnect_all') as mock_disconnect:
                 await listener.stop_listening()
-                assert not listener._is_listening
+                assert not listener.is_listening
                 mock_disconnect.assert_called_once()
 
-            # Verify callback was registered
-            assert len(events_received) == 0  # No events processed yet
+            # Verify callback was registered by checking the callback registry stats
+            stats = listener._callback_registry.get_stats()
+            assert stats["total_callbacks"] == 1
+            assert stats["unique_contracts"] == 1
+            assert stats["unique_events"] == 1
 
     @pytest.mark.asyncio
     async def test_context_manager_usage(self, temp_ethereum_config_file):
@@ -124,10 +126,10 @@ class TestEndToEndFlow:
             # Test context manager
             async with ChainListener.from_config_file(temp_ethereum_config_file) as listener:
                 assert listener is not None
-                assert listener._is_listening
+                assert listener.is_listening
 
             # Verify cleanup after context exit
-            assert not listener._is_listening
+            assert not listener.is_listening
 
     @pytest.mark.asyncio
     async def test_multiple_callbacks_registration_and_processing(self):

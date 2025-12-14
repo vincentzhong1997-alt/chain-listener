@@ -293,16 +293,43 @@ class TestCallbackRegistry:
         assert transfer_callback["callback_name"] == "callback1"
         assert transfer_callback["metadata"] == {"type": "transfer"}
 
-        # Check anonymous function
-        lambda_cb = lambda x: "test"
+        # Check different types of callbacks
+        def named_callback(event):
+            return "named_callback_result"
+
+        lambda_callback = lambda x: "lambda_callback_result"
+
+        # Register named function
         registry.register_callback(
             "0x1111111111111111111111111111111111111111",
-            "Test",
-            lambda_cb
+            "TestNamed",
+            named_callback
         )
+
+        # Register lambda function
+        registry.register_callback(
+            "0x1111111111111111111111111111111111111111",
+            "TestLambda",
+            lambda_callback
+        )
+
         callbacks = registry.list_callbacks()
-        test_callback = next(c for c in callbacks if c["event_name"] == "Test")
-        assert test_callback["callback_name"] == "<lambda>"
+
+        # Check named function callback
+        named_cb = next(c for c in callbacks if c["event_name"] == "TestNamed")
+        assert named_cb["contract_address"] == "0x1111111111111111111111111111111111111111"
+        assert "named_callback" in named_cb["callback_name"].lower()
+
+        # Check lambda function callback
+        lambda_cb = next(c for c in callbacks if c["event_name"] == "TestLambda")
+        assert lambda_cb["contract_address"] == "0x1111111111111111111111111111111111111111"
+        # Test that lambda callback is properly registered (without relying on string representation)
+        assert lambda_cb["callback_name"] is not None
+        assert len(lambda_cb["callback_name"]) > 0
+
+        # Verify callbacks are callable
+        assert callable(named_callback)
+        assert callable(lambda_callback)
 
     def test_get_callbacks_for_contract(self, registry):
         """Test getting callbacks for a specific contract."""

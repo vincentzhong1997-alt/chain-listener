@@ -27,6 +27,12 @@ class RPCStrategy(str, Enum):
 
 
 
+class RateLimitConfig(BaseModel):
+    """Rate limiting configuration for RPC requests."""
+    requests_per_second: int = Field(default=10, ge=1, le=1000, description="Maximum requests per second")
+    burst_size: int = Field(default=20, ge=1, le=1000, description="Maximum burst size")
+
+
 class RPCConfig(BaseModel):
     """RPC endpoint configuration."""
     model_config = ConfigDict(validate_assignment=True)
@@ -34,7 +40,7 @@ class RPCConfig(BaseModel):
     urls: List[str] = Field(..., min_length=1, description="RPC endpoint URLs")
     timeout: int = Field(default=30, ge=1, le=300, description="Request timeout in seconds")
     retries: int = Field(default=3, ge=0, le=10, description="Number of retry attempts")
-    strategy: RPCStrategy = Field(default=RPCStrategy.ROUND_ROBIN, description="Endpoint selection strategy")
+    rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig, description="Rate limiting configuration")
 
     @field_validator("urls")
     @classmethod
@@ -94,7 +100,7 @@ class ChainConfig(BaseModel):
     chain_id: Optional[int] = Field(default=None, description="Chain ID for EVM chains")
     confirmation_blocks: int = Field(default=12, ge=0, le=100, description="Number of confirmation blocks")
     polling_interval: int = Field(default=1000, ge=100, le=60000, description="Polling interval in milliseconds")
-    rpc_urls: List[Dict[str, Any]] = Field(..., min_length=1, description="RPC endpoint URLs with priorities")
+    rpc: RPCConfig = Field(..., description="RPC configuration for connection management")
     contracts: List[ContractConfig] = Field(default_factory=list, description="Smart contracts to monitor")
     adapter_config: Optional[Dict[str, Any]] = Field(default=None, description="Adapter-specific configuration overrides")
 

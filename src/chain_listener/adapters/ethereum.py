@@ -50,24 +50,11 @@ class EthereumAdapter(BaseAdapter):
         Raises:
             ValueError: If network or configuration is invalid
         """
-        # Custom initialization (don't call super().__init__ to avoid old config validation)
-        self._validate_config(config)
-
-        # Set basic properties (with defaults for optional fields)
-        self.name = config.get("name", "ethereum_adapter")
-        self.network = config.get("network", "mainnet")
-        self.rpc_config = config.get("rpc", {})
-
-        # Validate Ethereum-specific configuration
-        self._validate_ethereum_config(config)
+        # Call parent initialization for standard functionality
+        super().__init__(config)
 
         # Set properties (allow user override)
         self.block_time = config.get("block_time", self.DEFAULT_CONFIG["block_time"])
-
-        # Priority connection management
-        rpc_endpoints = config.get("rpc_endpoints", [])
-        max_retries = self.rpc_config.get("retries", 3)
-        self._connection_pool = PriorityConnectionPool(rpc_endpoints, max_retries)
 
         # Web3 instances cache (one per endpoint)
         self._web3_instances: Dict[str, Web3] = {}
@@ -78,14 +65,7 @@ class EthereumAdapter(BaseAdapter):
         # Event filter cache
         self._filter_cache: Dict[str, Any] = {}
 
-        # Rate limiting and logging
-        from ..adapters.base import RateLimiter
-        rate_limit_config = self.rpc_config.get("rate_limit", {})
-        self._rate_limiter = RateLimiter(
-            requests_per_second=rate_limit_config.get("requests_per_second", 10),
-            burst_size=rate_limit_config.get("burst_size", 20)
-        )
-
+        
         # Request tracking
         self._request_count = 0
         self._error_count = 0
@@ -93,7 +73,7 @@ class EthereumAdapter(BaseAdapter):
         self.logger = logging.getLogger(__name__)
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
-        """Validate adapter configuration for the new format.
+        """Validate adapter configuration.
 
         Args:
             config: Configuration dictionary
@@ -101,12 +81,8 @@ class EthereumAdapter(BaseAdapter):
         Raises:
             ValueError: If configuration is invalid
         """
-        if not config:
-            raise ValueError("Configuration cannot be empty")
-        if "rpc_endpoints" not in config:
-            raise ValueError("Missing required config: rpc_endpoints")
-        if not config["rpc_endpoints"]:
-            raise ValueError("RPC URLs required")
+        # Call parent validation for standard config validation
+        super()._validate_config(config)
 
     def _get_or_create_web3_instance(self, url: str) -> Web3:
         """获取或创建 Web3 实例（带缓存）"""
@@ -127,7 +103,7 @@ class EthereumAdapter(BaseAdapter):
         max_retries = self._connection_pool.max_retries
         for attempt in range(max_retries + 1):
             # 获取当前最佳端点
-            url = self._connection_pool.get_best_endpoint()
+            url = self._connection_pool.get_next_connection()
 
             # 获取 Web3 实例
             w3 = self._get_or_create_web3_instance(url)
@@ -158,23 +134,6 @@ class EthereumAdapter(BaseAdapter):
         raise BlockchainAdapterError(
             f"All RPC endpoints failed after {max_retries} retries: {last_exception}"
         )
-
-    def _validate_ethereum_config(self, config: Dict[str, Any]) -> None:
-        """Validate Ethereum-specific configuration.
-
-        Args:
-            config: Configuration dictionary
-
-        Raises:
-            ValueError: If configuration is invalid
-        """
-        # Validate RPC URLs for Ethereum
-        rpc_config = config.get("rpc", {})
-        urls = rpc_config.get("urls", [])
-
-        for url in urls:
-            if not url.startswith(("http://", "https://")):
-                raise ValueError(f"Invalid Ethereum RPC URL: {url}")
 
     
     async def connect(self) -> None:
@@ -569,45 +528,6 @@ class EthereumAdapter(BaseAdapter):
         })
 
         return base_metadata
-
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get Ethereum adapter health status.
-
-        Returns:
-            Health status dictionary with Ethereum-specific metrics
-        """
-        base_health = super().get_health_status()
-
-        if self._w3 and self._w3.is_connected():
-            try:
-                # Add Ethereum-specific health checks
-                sync_status = self._w3.eth.syncing
-
-                if isinstance(sync_status, dict) and sync_status:
-                    base_health.update({
-                        "syncing": True,
-                        "sync_status": {
-                            "starting_block": sync_status.get("startingBlock"),
-                            "current_block": sync_status.get("currentBlock"),
-                            "highest_block": sync_status.get("highestBlock")
-                        }
-                    })
-                else:
-                    base_health["syncing"] = False
-
-                # Add network info
-                base_health.update({
-                    "connected_chain_id": self._w3.eth.chain_id,
-                    "latest_block": self._w3.eth.block_number,
-                    "cached_contracts": len(self._contract_cache),
-                    "active_filters": len(self._filter_cache)
-                })
-
-            except Exception:
-                # Don't fail health check due to network issues
-                pass
-
-        return base_health
 
     async def get_transaction_receipt(self, transaction_hash: str) -> Dict[str, Any]:
         """Get transaction receipt by hash from Ethereum.

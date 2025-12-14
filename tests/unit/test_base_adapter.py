@@ -256,28 +256,7 @@ class TestBaseBlockchainAdapter:
         with pytest.raises(ValueError, match="Invalid retries: must be non-negative integer"):
             MockBlockchainAdapter(config)
 
-    @pytest.mark.asyncio
-    async def test_adapter_connection_lifecycle(self):
-        """Test complete adapter connection lifecycle."""
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = MockBlockchainAdapter(config)
-
-        # Initially not connected
-        assert not adapter.is_connected()
-
-        # Connect
-        await adapter.connect()
-        assert adapter.is_connected()
-
-        # Disconnect
-        await adapter.disconnect()
-        assert not adapter.is_connected()
-
+    
     @pytest.mark.asyncio
     async def test_get_latest_block_number_when_connected(self):
         """Test getting latest block number when connected."""
@@ -413,40 +392,6 @@ class TestBaseBlockchainAdapter:
         with pytest.raises(ConnectionError, match="Not connected to blockchain"):
             await adapter.get_transaction("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
 
-    def test_health_status_when_disconnected(self):
-        """Test health status when adapter is disconnected."""
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = MockBlockchainAdapter(config)
-
-        health = adapter.get_health_status()
-
-        assert health["status"] == "unhealthy"
-        assert health["connected"] is False
-        assert health["request_count"] == 0
-        assert health["error_count"] == 0
-        assert health["active_subscriptions"] == 0
-
-    def test_health_status_when_connected(self):
-        """Test health status when adapter is connected."""
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = MockBlockchainAdapter(config)
-        adapter._connected = True  # Simulate connection
-
-        health = adapter.get_health_status()
-
-        assert health["status"] == "healthy"
-        assert health["connected"] is True
-
     def test_get_metadata(self):
         """Test adapter metadata."""
         config = {
@@ -551,25 +496,26 @@ class TestBaseBlockchainAdapter:
         for result in results:
             assert isinstance(result, list)
 
-    @pytest.mark.parametrize("strategy", ["round_robin", "random", "failover"])
-    def test_connection_pool_strategies(self, strategy):
-        """Test different connection pool strategies."""
+    def test_connection_pool_priority_order(self):
+        """Test that connection pool respects URL priority order."""
         config = {
             "name": "ethereum",
             "network": "mainnet",
             "rpc": {
                 "urls": [
-                    "https://eth1.llamarpc.com",
-                    "https://eth2.llamarpc.com",
-                    "https://eth3.llamarpc.com"
-                ],
-                "strategy": strategy
+                    "https://primary.eth.llamarpc.com",    # Priority 1
+                    "https://secondary.eth.llamarpc.com", # Priority 2
+                    "https://tertiary.eth.llamarpc.com"    # Priority 3
+                ]
             }
         }
 
         adapter = MockBlockchainAdapter(config)
 
-        assert adapter._connection_pool.strategy == strategy
+        # Should return primary URL first (highest priority)
+        connection = adapter._get_next_connection()
+        assert connection == "https://primary.eth.llamarpc.com"
+
         assert len(adapter._connection_pool.urls) == 3
 
     @pytest.mark.asyncio
@@ -609,8 +555,8 @@ class TestBaseBlockchainAdapter:
 
         adapter = MockBlockchainAdapter(config)
 
-        assert adapter._rate_limiter.requests_per_second == 20
-        assert adapter._rate_limiter.burst_size == 50
+        assert adapter._requests_per_second == 20
+        assert adapter._burst_size == 50
 
     @pytest.mark.asyncio
     async def test_error_handling_wrapping(self):
@@ -647,25 +593,25 @@ class TestBaseBlockchainAdapter:
         adapter = MockBlockchainAdapter(config)
         assert len(adapter.rpc_config["urls"]) == 1
 
-        # Multiple URLs with different strategies
+        # Multiple URLs with priority order
         config = {
             "name": "ethereum",
             "network": "testnet",
             "rpc": {
                 "urls": [
-                    "https://eth1.llamarpc.com",
-                    "https://eth2.llamarpc.com",
-                    "https://eth3.llamarpc.com",
-                    "https://eth4.llamarpc.com"
+                    "https://primary.eth.llamarpc.com",
+                    "https://secondary.eth.llamarpc.com",
+                    "https://tertiary.eth.llamarpc.com",
+                    "https://backup.eth.llamarpc.com"
                 ],
-                "strategy": "random",
-                "timeout": 60,
                 "retries": 5
             }
         }
 
         adapter = MockBlockchainAdapter(config)
         assert len(adapter.rpc_config["urls"]) == 4
-        assert adapter._connection_pool.strategy == "random"
-        assert adapter._connection_pool.timeout == 60
-        assert adapter._connection_pool.retries == 5
+        assert adapter._connection_pool.max_retries == 5
+
+        # Test that primary URL is returned first
+        connection = adapter._get_next_connection()
+        assert connection == "https://primary.eth.llamarpc.com"

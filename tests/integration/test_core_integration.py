@@ -310,7 +310,14 @@ class TestCoreComponentIntegration:
                 # Process event
                 results = await listener._event_processor.process_events([raw_event])
 
+                # Verify processing results
                 assert len(results) == 1
                 assert results[0].success is True
-                # Callback should be called through the processor
-                assert len(callback_calls) >= 0
+
+                # Verify callback was actually called with correct event data
+                assert len(callback_calls) == 1
+                assert callback_calls[0].chain_type == ChainType.ETHEREUM
+                assert callback_calls[0].contract_address == "0x123..."
+                assert callback_calls[0].event_name == "Transfer"
+                assert callback_calls[0].block_number == 12345
+                assert callback_calls[0].transaction_hash == "0xdef..."

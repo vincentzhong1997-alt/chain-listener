@@ -86,7 +86,7 @@ class ChainListener:
 
         # Validate each chain configuration
         for chain_name, chain_config in self.config.chains.items():
-            if not chain_config.rpc_urls:
+            if not chain_config.rpc.urls:
                 raise ChainListenerError(f"No RPC URLs configured for chain: {chain_name}")
 
             if not chain_config.chain_type:
@@ -159,24 +159,19 @@ class ChainListener:
         # Extract user-provided adapter config overrides
         user_overrides = chain_config.adapter_config or {}
 
-        # Extract RPC URLs with priorities from the standardized format
-        rpc_endpoints = [
-            (rpc_item["url"], rpc_item.get("priority", 999))
-            for rpc_item in chain_config.rpc_urls
-        ]
-
-        # Sort by priority (lower number = higher priority)
-        rpc_endpoints.sort(key=lambda x: x[1])
-        rpc_urls = [url for url, _ in rpc_endpoints]
-
-        # Base configuration with conventions
+        # Use the new standardized RPC configuration
+        # URL ordering determines priority (convention over configuration)
         adapter_config = {
             "name": f"{chain_config.chain_type}_adapter",
             "network": "mainnet",
-            "rpc_endpoints": rpc_endpoints,  # 保留优先级信息
             "rpc": {
-                "timeout": 30,
-                "retries": 3
+                "urls": chain_config.rpc.urls,
+                "timeout": chain_config.rpc.timeout,
+                "retries": chain_config.rpc.retries,
+                "rate_limit": {
+                    "requests_per_second": chain_config.rpc.rate_limit.requests_per_second,
+                    "burst_size": chain_config.rpc.rate_limit.burst_size
+                }
             },
             "confirmation_blocks": chain_config.confirmation_blocks,
             "polling_interval": chain_config.polling_interval,

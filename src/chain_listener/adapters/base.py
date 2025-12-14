@@ -28,126 +28,89 @@ from chain_listener.exceptions import (
 )
 
 
-class RateLimiter:
-    """Rate limiter for API requests.
-
-    Implements token bucket algorithm for rate limiting with configurable
-    requests per second and burst capacity.
-    """
-
-    def __init__(self, requests_per_second: int = 10, burst_size: int = 20):
-        """Initialize rate limiter.
-
-        Args:
-            requests_per_second: Maximum requests per second
-            burst_size: Maximum burst capacity
-        """
-        self.requests_per_second = requests_per_second
-        self.burst_size = burst_size
-        self.tokens = burst_size
-        self.last_refill = time.time()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self) -> None:
-        """Acquire a token, blocking if rate limit is exceeded."""
-        async with self._lock:
-            now = time.time()
-            time_passed = now - self.last_refill
-            self.tokens = min(self.burst_size, self.tokens + time_passed * self.requests_per_second)
-            self.last_refill = now
-
-            if self.tokens < 1:
-                # Calculate wait time needed
-                wait_time = (1 - self.tokens) / self.requests_per_second
-                await asyncio.sleep(wait_time)
-                self.tokens = 0
-            else:
-                self.tokens -= 1
-
-    def can_acquire(self) -> bool:
-        """Check if a token can be acquired without waiting."""
-        now = time.time()
-        time_passed = now - self.last_refill
-        current_tokens = min(self.burst_size, self.tokens + time_passed * self.requests_per_second)
-        return current_tokens >= 1
 
 
-class ConnectionPool:
-    """Manages multiple RPC endpoints with load balancing strategies."""
+class BaseConnectionPool(ABC):
+    """Abstract base class for connection pool implementations."""
 
-    def __init__(
-        self,
-        urls: List[str],
-        strategy: str = "round_robin",
-        timeout: int = 30,
-        retries: int = 3
-    ):
+    def __init__(self, urls: List[str], **kwargs):
         """Initialize connection pool.
 
         Args:
             urls: List of RPC endpoint URLs
-            strategy: Load balancing strategy ('round_robin', 'random', 'failover')
-            timeout: Request timeout in seconds
-            retries: Number of retry attempts
+            **kwargs: Additional configuration parameters
         """
         self.urls = urls
-        self.strategy = strategy
-        self.timeout = timeout
-        self.retries = retries
-        self._current_index = 0
-        self._failed_indices = set()
 
+    @abstractmethod
     def get_next_connection(self) -> str:
-        """Get next available connection based on strategy."""
-        available_indices = [i for i in range(len(self.urls)) if i not in self._failed_indices]
+        """Get next available connection for request.
 
-        if not available_indices:
-            # All failed, reset and try again
-            self._failed_indices.clear()
-            available_indices = list(range(len(self.urls)))
+        Returns:
+            RPC endpoint URL
+        """
+        pass
 
-        if self.strategy == "round_robin":
-            index = available_indices[self._current_index % len(available_indices)]
-            self._current_index += 1
-        elif self.strategy == "random":
-            index = random.choice(available_indices)
-        elif self.strategy == "failover":
-            index = available_indices[0]  # Always use first available
-        else:
-            index = available_indices[0]
-
-        return self.urls[index]
-
-    def mark_failed(self, url: str) -> None:
-        """Mark a connection as failed."""
-        try:
-            index = self.urls.index(url)
-            self._failed_indices.add(index)
-        except ValueError:
-            pass
-
+    @abstractmethod
     def mark_success(self, url: str) -> None:
-        """Mark a connection as successful (clear failure state)."""
-        try:
-            index = self.urls.index(url)
-            self._failed_indices.discard(index)
-        except ValueError:
-            pass
+        """Mark a request as successful.
+
+        Args:
+            url: The RPC endpoint URL that was successful
+        """
+        pass
+
+    @abstractmethod
+    def mark_failure(self, url: str) -> None:
+        """Mark a request as failed.
+
+        Args:
+            url: The RPC endpoint URL that failed
+        """
+        pass
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Get health status of all connections.
+
+        Returns:
+            Dictionary with health information for each endpoint
+        """
+        return {url: {"status": "unknown"} for url in self.urls}
 
 
-class PriorityConnectionPool:
+class PriorityConnectionPool(BaseConnectionPool):
     """Manages RPC endpoints with priority and intelligent failover."""
 
-    def __init__(self, endpoints_with_priority: List[tuple], max_retries: int = 3):
+    def __init__(self, endpoints: List, max_retries: int = 3):
         """
         Initialize priority connection pool.
 
         Args:
-            endpoints_with_priority: List of (url, priority) tuples
+            endpoints: List of URLs or list of (url, priority) tuples
             max_retries: Maximum number of retries before marking endpoint as failed
         """
-        # 按优先级排序（数字越小优先级越高）
-        self.endpoints = sorted(endpoints_with_priority, key=lambda x: x[1])
+        if not endpoints:
+            raise ValueError("Endpoints list cannot be empty")
+
+        # 约定大于配置：按顺序分配优先级（数字越小优先级越高）
+        if isinstance(endpoints[0], str):
+            # 简单URL列表：按顺序分配优先级
+            self.endpoints = [(url, index + 1) for index, url in enumerate(endpoints)]
+            urls = endpoints
+        else:
+            # (url, priority) 元组列表
+            # 验证所有端点都是正确格式
+            for endpoint in endpoints:
+                if not isinstance(endpoint, (list, tuple)) or len(endpoint) != 2:
+                    raise ValueError("All endpoints must be (url, priority) tuples")
+
+            self.endpoints = [(url, priority) for url, priority in endpoints]
+            # 按优先级排序（数字越小优先级越高）
+            self.endpoints = sorted(self.endpoints, key=lambda x: x[1])
+            urls = [url for url, _ in self.endpoints]
+
+        super().__init__(urls)
+
         self.max_retries = max_retries
 
         # 端点统计信息
@@ -163,11 +126,11 @@ class PriorityConnectionPool:
             for url, _ in self.endpoints
         }
 
-    def get_best_endpoint(self) -> str:
+    def get_next_connection(self) -> str:
         """获取当前可用的最佳端点"""
         now = time.time()
 
-        for url, priority in self.endpoints:
+        for url, _ in self.endpoints:
             stats = self.endpoint_stats[url]
 
             # 检查是否在冷却期
@@ -264,21 +227,29 @@ class BaseAdapter(ABC):
         self.network = config.get("network", "mainnet")
         self.rpc_config = config["rpc"]
 
-        # Connection management
-        self._connection_pool = ConnectionPool(
-            urls=self.rpc_config["urls"],
-            strategy=self.rpc_config.get("strategy", "round_robin"),
-            timeout=self.rpc_config.get("timeout", 30),
-            retries=self.rpc_config.get("retries", 3)
+        # Connection management - use PriorityConnectionPool with URL ordering as priority
+        urls = self.rpc_config["urls"]
+        self._connection_pool = PriorityConnectionPool(
+            endpoints=urls,
+            max_retries=self.rpc_config.get("retries", 3)
         )
 
         self._connection_lock = asyncio.Lock()
 
-        # Rate limiting
+        # Rate limiting using async-limiter
+        from async_limiter import DualRateLimiter
         rate_limit_config = self.rpc_config.get("rate_limit", {})
-        self._rate_limiter = RateLimiter(
-            requests_per_second=rate_limit_config.get("requests_per_second", 10),
-            burst_size=rate_limit_config.get("burst_size", 20)
+        self._requests_per_second = rate_limit_config.get("requests_per_second", 10)
+        self._burst_size = rate_limit_config.get("burst_size", 20)
+
+        # Convert to DualRateLimiter parameters
+        # max_concurrent: allow burst_size concurrent requests
+        # max_requests: allow requests_per_second requests per time_period
+        # time_period: 1 second for rate limiting per second
+        self._rate_limiter = DualRateLimiter(
+            max_concurrent=self._burst_size,
+            max_requests=self._requests_per_second,
+            time_period=1.0
         )
 
         # Subscription management
@@ -514,28 +485,6 @@ class BaseAdapter(ABC):
         else:
             raise SubscriptionError(f"Subscription not found: {subscription_id}")
 
-    def get_health_status(self) -> Dict[str, Any]:
-        """Get adapter health status.
-
-        Returns:
-            Health status dictionary with status, metrics, and checks
-        """
-        status = "healthy" if self._connected else "unhealthy"
-
-        return {
-            "status": status,
-            "connected": self._connected,
-            "request_count": self._request_count,
-            "error_count": self._error_count,
-            "error_rate": self._error_count / max(self._request_count, 1),
-            "last_request_time": self._last_request_time,
-            "active_subscriptions": len([s for s in self._subscriptions.values() if s["active"]]),
-            "rate_limiter_available": self._rate_limiter.can_acquire(),
-            "available_connections": len([i for i in range(len(self.rpc_config["urls"]))
-                                        if i not in self._connection_pool._failed_indices]),
-            "total_connections": len(self.rpc_config["urls"])
-        }
-
     def get_metadata(self) -> Dict[str, Any]:
         """Get adapter metadata and capabilities.
 
@@ -556,8 +505,8 @@ class BaseAdapter(ABC):
                 "latest_block": True
             },
             "rate_limits": {
-                "requests_per_second": self._rate_limiter.requests_per_second,
-                "burst_size": self._rate_limiter.burst_size
+                "requests_per_second": self._requests_per_second,
+                "burst_size": self._burst_size
             }
         }
 
@@ -590,7 +539,7 @@ class BaseAdapter(ABC):
                 f"Rate limit exceeded: {error_msg}",
                 blockchain=self.name,
                 network=self.network,
-                limit=self._rate_limiter.requests_per_second,
+                limit=self._requests_per_second,
                 retry_after=1.0,
                 details={"original_error": error_msg}
             )
@@ -616,28 +565,28 @@ class BaseAdapter(ABC):
         Raises:
             BlockchainAdapterError: If operation fails
         """
-        await self._rate_limiter.acquire()
+        # Use async-limiter context manager for rate limiting
+        async with self._rate_limiter:
+            self._request_count += 1
+            self._last_request_time = datetime.now(timezone.utc)
 
-        self._request_count += 1
-        self._last_request_time = datetime.now(timezone.utc)
-
-        try:
-            # Check if operation is async
-            if asyncio.iscoroutinefunction(operation):
-                result = await operation(*args, **kwargs)
-            else:
-                result = operation(*args, **kwargs)
-            return result
-        except Exception as e:
-            self._handle_blockchain_error(e)
+            try:
+                # Check if operation is async
+                if asyncio.iscoroutinefunction(operation):
+                    result = await operation(*args, **kwargs)
+                else:
+                    result = operation(*args, **kwargs)
+                return result
+            except Exception as e:
+                self._handle_blockchain_error(e)
 
     async def _initialize_connection_pool(self) -> None:
         """Initialize connection pool with health checks.
 
         Tests each connection to determine availability.
         """
-        # Default implementation - just mark all as available
-        self._connection_pool._failed_indices.clear()
+        # Default implementation - PriorityConnectionPool handles health automatically
+        pass
 
     def _get_next_connection(self) -> str:
         """Get next available RPC connection.
@@ -652,14 +601,7 @@ class BaseAdapter(ABC):
         self._request_count += 1
         self._last_request_time = datetime.now(timezone.utc)
 
-    def _check_rate_limit(self) -> bool:
-        """Check if rate limit allows new requests.
-
-        Returns:
-            True if request can proceed, False otherwise
-        """
-        return self._rate_limiter.can_acquire()
-
+    
     @abstractmethod
     async def get_transaction(self, transaction_hash: str) -> Dict[str, Any]:
         """Get transaction information by hash.
