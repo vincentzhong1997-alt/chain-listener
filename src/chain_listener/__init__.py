@@ -48,17 +48,24 @@ __all__ = [
 ]
 
 # Convenience imports for advanced usage
-from .core import AdapterRegistry, CallbackRegistry, EventProcessor
-from .adapters import BaseAdapter, EthereumAdapter, BSCAdapter
+from .core import AdapterRegistry, CallbackRegistry, EventProcessor, StateManager
+from .adapters import BaseAdapter, EthereumAdapter, SolanaAdapter, TronAdapter
+from .storage import StorageBackend, InMemoryStorage
 
 __all__.extend([
     # Core components
     "AdapterRegistry",
     "CallbackRegistry",
     "EventProcessor",
+    "StateManager",
 
     # Adapters
     "BaseAdapter",
     "EthereumAdapter",
-    "BSCAdapter",
+    "SolanaAdapter",
+    "TronAdapter",
+
+    # Storage
+    "StorageBackend",
+    "InMemoryStorage",
 ])

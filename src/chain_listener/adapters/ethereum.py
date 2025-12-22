@@ -7,24 +7,25 @@ testnet networks, with comprehensive error handling and retry logic.
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Any, AsyncGenerator, Union, Callable
-from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any, AsyncGenerator, Union, Callable, Set
 
+from hexbytes import HexBytes
+from eth_utils import event_abi_to_log_topic
 from web3 import Web3
+from web3.datastructures import AttributeDict
 from web3.exceptions import (
     BlockNotFound,
-    TimeExhausted,
-    TransactionNotFound,
-    ValidationError as Web3ValidationError
+    TransactionNotFound
 )
+from web3._utils.events import get_event_data
 
 from chain_listener.adapters.base import BaseAdapter, PriorityConnectionPool
+from chain_listener.models.events import RawEvent, DecodedEvent
 from chain_listener.exceptions import (
     BlockchainAdapterError,
     ConnectionError as ChainConnectionError,
     BlockNotFoundError,
     TransactionError,
-    SubscriptionError,
     RateLimitError
 )
 
@@ -38,7 +39,9 @@ class EthereumAdapter(BaseAdapter):
 
     # Default configuration
     DEFAULT_CONFIG = {
-        "block_time": 12
+        "block_time": 12,
+        # Conservative block-range chunk size; can be overridden via adapter_config
+        "max_block_range": 10,
     }
 
     def __init__(self, config: Dict[str, Any]):
@@ -55,6 +58,19 @@ class EthereumAdapter(BaseAdapter):
 
         # Set properties (allow user override)
         self.block_time = config.get("block_time", self.DEFAULT_CONFIG["block_time"])
+        max_range_config = config.get(
+            "max_block_range",
+            self.DEFAULT_CONFIG["max_block_range"]
+        )
+        try:
+            self.max_block_range = max(1, int(max_range_config))
+        except (TypeError, ValueError):
+            self.max_block_range = self.DEFAULT_CONFIG["max_block_range"]
+            logging.getLogger(__name__).warning(
+                "Invalid max_block_range '%s', falling back to default %s",
+                max_range_config,
+                self.max_block_range,
+            )
 
         # Web3 instances cache (one per endpoint)
         self._web3_instances: Dict[str, Web3] = {}
@@ -65,12 +81,15 @@ class EthereumAdapter(BaseAdapter):
         # Event filter cache
         self._filter_cache: Dict[str, Any] = {}
 
-        
-        # Request tracking
-        self._request_count = 0
-        self._error_count = 0
-
         self.logger = logging.getLogger(__name__)
+        self._w3 = None
+
+        # ABI decoding helpers
+        self._abi_codec = Web3().codec
+        self._contract_abi_map: Dict[str, List[Dict[str, Any]]] = {}
+        self._event_signature_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._event_name_topic_map: Dict[str, Dict[str, str]] = {}
+        self._load_contract_abis()
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
         """Validate adapter configuration.
@@ -246,7 +265,8 @@ class EthereumAdapter(BaseAdapter):
         address: Optional[Union[str, List[str]]] = None,
         topics: Optional[List[str]] = None,
         from_block: Optional[int] = None,
-        to_block: Optional[int] = None
+        to_block: Optional[int] = None,
+        event_filters: Optional[Dict[str, List[str]]] = None
     ) -> List[Dict[str, Any]]:
         """Get logs matching criteria from Ethereum.
 
@@ -262,22 +282,108 @@ class EthereumAdapter(BaseAdapter):
         Raises:
             BlockchainAdapterError: If request fails
         """
-        def get_logs_operation(w3):
-            # Build filter parameters
-            filter_params = {}
-            if address:
-                filter_params["address"] = address
-            if topics:
-                filter_params["topics"] = topics
-            if from_block is not None:
-                filter_params["fromBlock"] = from_block
-            if to_block is not None:
-                filter_params["toBlock"] = to_block
+        topic_filter = self._build_topic_filters(event_filters)
 
-            return w3.eth.get_logs(filter_params)
+        def _format_block_param(value: Optional[Union[int, str]]) -> Optional[str]:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value
+            if isinstance(value, int):
+                if value < 0:
+                    raise ValueError("Block number cannot be negative")
+                return hex(value)
+            raise TypeError(f"Unsupported block parameter type: {type(value)}")
 
-        logs = await self._execute_with_priority_routing(get_logs_operation)
-        return [self._convert_log_to_standard_format(log) for log in logs]
+        block_ranges = self._build_block_ranges(from_block, to_block)
+        all_logs: List[Dict[str, Any]] = []
+
+        for chunk_from, chunk_to in block_ranges:
+
+            def get_logs_operation(w3, chunk_from=chunk_from, chunk_to=chunk_to):
+                # Build filter parameters
+                filter_params = {}
+                if address:
+                    filter_params["address"] = address
+                if topic_filter:
+                    filter_params["topics"] = topic_filter
+                elif topics:
+                    filter_params["topics"] = topics
+                formatted_from = _format_block_param(chunk_from)
+                formatted_to = _format_block_param(chunk_to)
+                if formatted_from is not None:
+                    filter_params["fromBlock"] = formatted_from
+                if formatted_to is not None:
+                    filter_params["toBlock"] = formatted_to
+
+                self.logger.debug(
+                    "Fetching logs with params: address=%s, from=%s, to=%s, topics=%s",
+                    filter_params.get("address"),
+                    filter_params.get("fromBlock"),
+                    filter_params.get("toBlock"),
+                    filter_params.get("topics"),
+                )
+
+                return w3.eth.get_logs(filter_params)
+
+            logs = await self._execute_with_priority_routing(get_logs_operation)
+            all_logs.extend(
+                self._convert_log_to_standard_format(log)
+                for log in logs
+            )
+
+        return all_logs
+
+    def _build_topic_filters(
+        self, event_filters: Optional[Dict[str, List[str]]]
+    ) -> Optional[List[List[str]]]:
+        if not event_filters:
+            return None
+
+        topics: Set[str] = set()
+
+        for address, events in event_filters.items():
+            normalized_address = self._normalize_contract_address(address)
+            name_map = self._event_name_topic_map.get(normalized_address)
+            if not name_map:
+                raise BlockchainAdapterError(
+                    f"No ABI topics are available for contract {address}"
+                )
+
+            for event_name in events or []:
+                topic = name_map.get(event_name)
+                if not topic:
+                    raise BlockchainAdapterError(
+                        f"Event '{event_name}' is not defined in ABI for contract {address}"
+                    )
+                topics.add(topic)
+
+        if not topics:
+            return None
+
+        return [list(topics)]
+
+    def _build_block_ranges(
+        self,
+        from_block: Optional[Union[int, str]],
+        to_block: Optional[Union[int, str]]
+    ) -> List[tuple]:
+        """Split the requested range into max_block_range-sized chunks."""
+        if (
+            isinstance(from_block, int)
+            and isinstance(to_block, int)
+            and to_block >= from_block
+        ):
+            ranges: List[tuple] = []
+            current = from_block
+            while current <= to_block:
+                chunk_end = min(current + self.max_block_range - 1, to_block)
+                ranges.append((current, chunk_end))
+                current = chunk_end + 1
+            return ranges
+
+        # Non-integer or open-ended ranges can't be chunked safely
+        return [(from_block, to_block)]
 
     def _convert_log_to_standard_format(self, log: Any) -> Dict[str, Any]:
         """Convert Web3 log to standard format.
@@ -362,72 +468,6 @@ class EthereumAdapter(BaseAdapter):
         except Exception as e:
             self._handle_blockchain_error(e)
 
-    async def subscribe_to_contract_events(
-        self,
-        address: str,
-        events: List[str]
-    ) -> str:
-        """Subscribe to events from a specific Ethereum contract.
-
-        Args:
-            address: Contract address to subscribe to
-            events: List of event names to subscribe to
-
-        Returns:
-            Subscription ID for managing the subscription
-
-        Raises:
-            SubscriptionError: If subscription fails
-        """
-        # Direct execution - HTTP RPC doesn't need connection management
-
-        try:
-            # Get or create contract instance
-            contract = await self._get_contract_instance(address)
-
-            # Create filters for each event
-            filters = []
-            for event_name in events:
-                if hasattr(contract.events, event_name):
-                    event = getattr(contract.events, event_name)
-                    filter_obj = await self._execute_with_rate_limit(
-                        event.create_filter
-                    )
-                    filters.append(filter_obj)
-                else:
-                    # Skip unknown events but continue
-                    continue
-
-            # Store subscription
-            subscription_id = await super().subscribe_to_contract_events(address, events)
-
-            # Store filters for this subscription
-            self._filter_cache[subscription_id] = filters
-
-            return subscription_id
-
-        except Exception as e:
-            self._handle_blockchain_error(e)
-
-    async def _get_contract_instance(self, address: str) -> Any:
-        """Get or create contract instance.
-
-        Args:
-            address: Contract address
-
-        Returns:
-            Web3 contract instance
-        """
-        if address not in self._contract_cache:
-            # Create generic contract instance (ABI can be added later)
-            contract = await self._execute_with_rate_limit(
-                self._w3.eth.contract,
-                address=address
-            )
-            self._contract_cache[address] = contract
-
-        return self._contract_cache[address]
-
     async def get_events_stream(
         self,
         address: Optional[str] = None,
@@ -477,57 +517,6 @@ class EthereumAdapter(BaseAdapter):
                 self._handle_blockchain_error(e)
                 # Wait before retrying
                 await asyncio.sleep(self.block_time)
-
-    async def batch_get_logs(
-        self,
-        requests: List[Dict[str, Any]]
-    ) -> List[List[Dict[str, Any]]]:
-        """Get logs for multiple requests in batch from Ethereum.
-
-        Args:
-            requests: List of log request dictionaries
-
-        Returns:
-            List of log lists, one for each request
-
-        Raises:
-            BlockchainAdapterError: If any request fails
-        """
-        # Direct execution - HTTP RPC doesn't need connection management
-
-        # Use base implementation with rate limiting
-        return await super().batch_get_logs(requests)
-
-    def get_metadata(self) -> Dict[str, Any]:
-        """Get Ethereum adapter metadata and capabilities.
-
-        Returns:
-            Metadata dictionary with Ethereum-specific info
-        """
-        base_metadata = super().get_metadata()
-
-        # Add Ethereum-specific metadata
-        base_metadata.update({
-            "chain_id": self.chain_id,
-            "block_time": self.block_time,
-            "supports": {
-                **base_metadata["supports"],
-                "contract_events": True,
-                "event_filters": True,
-                "transaction_receipts": True,
-                "gas_tracking": True,
-                "nonce_tracking": True
-            },
-            "features": {
-                "eip1559": True,  # EIP-1559 transaction type support
-                "smart_contracts": True,
-                "erc20": True,
-                "erc721": True,
-                "erc1155": True
-            }
-        })
-
-        return base_metadata
 
     async def get_transaction_receipt(self, transaction_hash: str) -> Dict[str, Any]:
         """Get transaction receipt by hash from Ethereum.
@@ -599,3 +588,168 @@ class EthereumAdapter(BaseAdapter):
 
         except Exception as e:
             self._handle_blockchain_error(e)
+
+    def _normalize_contract_address(self, address: Optional[str]) -> Optional[str]:
+        if not address:
+            return None
+        try:
+            return Web3.to_checksum_address(address)
+        except Exception:
+            return address.lower()
+
+    def _normalize_topic(self, topic: Union[str, bytes, HexBytes]) -> str:
+        if isinstance(topic, HexBytes):
+            return topic.hex().lower()
+        if isinstance(topic, (bytes, bytearray)):
+            return HexBytes(topic).hex().lower()
+        if isinstance(topic, str):
+            normalized = topic if topic.startswith("0x") else f"0x{topic}"
+            return normalized.lower()
+        raise TypeError(f"Unsupported topic type: {type(topic)}")
+
+    def _as_hexbytes(self, value: Union[str, bytes, HexBytes]) -> HexBytes:
+        if isinstance(value, HexBytes):
+            return value
+        if isinstance(value, (bytes, bytearray)):
+            return HexBytes(value)
+        if isinstance(value, str):
+            normalized = value if value.startswith("0x") else f"0x{value}"
+            return HexBytes(normalized)
+        raise TypeError(f"Unsupported hex value: {type(value)}")
+
+    def _load_contract_abis(self) -> None:
+        """Load ABI definitions for configured contracts."""
+        for contract in self._contract_configs:
+            address = contract.get("address")
+            abi_path = contract.get("abi_path")
+            if not address or not abi_path:
+                continue
+
+            abi = self._load_contract_abi(abi_path)
+            if not abi:
+                continue
+
+            normalized_address = self._normalize_contract_address(address)
+            if not normalized_address:
+                continue
+
+            self._contract_abi_map[normalized_address] = abi
+
+            topic_map: Dict[str, Dict[str, Any]] = {}
+            name_map = self._event_name_topic_map.setdefault(normalized_address, {})
+            for entry in abi:
+                if entry.get("type") != "event":
+                    continue
+                try:
+                    topic_bytes = event_abi_to_log_topic(entry)
+                    topic = f"0x{topic_bytes.hex().lower()}"
+                    topic_map[topic] = entry
+                    event_name = entry.get("name")
+                    if event_name:
+                        if event_name in name_map and name_map[event_name] != topic:
+                            self.logger.warning(
+                                "Duplicate event definition detected for %s on %s; using first seen signature",
+                                event_name,
+                                normalized_address,
+                            )
+                            continue
+                        name_map[event_name] = topic
+                except Exception as exc:
+                    self.logger.debug(
+                        "Failed to register ABI event %s for %s: %s",
+                        entry.get("name"),
+                        normalized_address,
+                        exc,
+                    )
+
+            if topic_map:
+                self._event_signature_map[normalized_address] = topic_map
+
+    def _decode_event_via_abi(self, event: RawEvent) -> Optional[DecodedEvent]:
+        raw_data = event.raw_data or {}
+        topics = raw_data.get("topics") or []
+        if not topics:
+            return None
+
+        normalized_address = self._normalize_contract_address(event.contract_address)
+        if not normalized_address:
+            return None
+
+        topic_map = self._event_signature_map.get(normalized_address)
+        if not topic_map:
+            return None
+
+        try:
+            topic_key = self._normalize_topic(topics[0])
+        except Exception:
+            return None
+
+        event_abi = topic_map.get(topic_key)
+        if not event_abi:
+            return None
+
+        try:
+            transaction_index = raw_data.get("transaction_index", raw_data.get("transactionIndex", 0))
+            log_entry_dict = {
+                "address": normalized_address,
+                "topics": [self._as_hexbytes(topic) for topic in topics],
+                "data": raw_data.get("data", "0x"),
+                "blockNumber": event.block_number,
+                "logIndex": event.log_index,
+                "transactionIndex": transaction_index if transaction_index is not None else 0,
+            }
+
+            if event.transaction_hash:
+                log_entry_dict["transactionHash"] = self._as_hexbytes(event.transaction_hash)
+            if event.block_hash:
+                log_entry_dict["blockHash"] = self._as_hexbytes(event.block_hash)
+
+            log_entry = AttributeDict(log_entry_dict)
+            decoded = get_event_data(self._abi_codec, event_abi, log_entry)
+        except Exception as exc:
+            self.logger.debug(
+                "ABI decode failed for %s on %s: %s",
+                normalized_address,
+                event.transaction_hash,
+                exc,
+            )
+            return None
+
+        parameters = dict(decoded["args"])
+        timestamp = raw_data.get("timestamp", event.timestamp)
+        event_name = event_abi.get("name") or raw_data.get("event_name") or raw_data.get("name") or "Unknown"
+
+        return DecodedEvent(
+            chain_type=event.chain_type,
+            contract_address=normalized_address,
+            event_name=event_name,
+            parameters=parameters,
+            block_number=event.block_number,
+            transaction_hash=event.transaction_hash,
+            log_index=event.log_index,
+            timestamp=timestamp,
+        )
+
+    def decode_event(self, event: RawEvent) -> DecodedEvent:
+        """Decode a raw Ethereum event using available metadata."""
+        decoded_with_abi = self._decode_event_via_abi(event)
+        if decoded_with_abi:
+            return decoded_with_abi
+
+        raw_data = event.raw_data or {}
+        event_name = raw_data.get("event_name") or raw_data.get("name") or "Unknown"
+
+        # Prefer parsed parameters from raw data if provided
+        parameters = raw_data.get("parameters") or raw_data.get("args") or {}
+
+        timestamp = raw_data.get("timestamp", event.timestamp)
+        return DecodedEvent(
+            chain_type=event.chain_type,
+            contract_address=event.contract_address,
+            event_name=event_name,
+            parameters=parameters,
+            block_number=event.block_number,
+            transaction_hash=event.transaction_hash,
+            log_index=event.log_index,
+            timestamp=timestamp
+        )

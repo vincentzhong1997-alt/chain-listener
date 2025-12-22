@@ -6,25 +6,23 @@ rate limiting, error handling, and batch operations.
 """
 
 import asyncio
+import json
 import re
 import time
-import hashlib
 import logging
+from pathlib import Path
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Callable, AsyncGenerator, Union
+from typing import Dict, List, Optional, Any, Callable, Union, Awaitable
 
 from chain_listener.exceptions import (
     BlockchainAdapterError,
     ConnectionError as ChainConnectionError,
     RateLimitError,
-    SubscriptionError,
-    BlockNotFoundError,
-    TransactionError,
     RetryExhaustedError
 )
+from chain_listener.models.events import RawEvent, DecodedEvent, ChainType
 
-
+logger = logging.getLogger(__name__)
 
 
 class BaseConnectionPool(ABC):
@@ -223,8 +221,24 @@ class BaseAdapter(ABC):
         self.name = config["name"]
         self.network = config.get("network", "mainnet")
         self.rpc_config = config["rpc"]
-        # Chain type is optional but set when building adapter configs
-        self.chain_type = config.get("chain_type")
+        chain_type_value = config.get("chain_type")
+        if isinstance(chain_type_value, ChainType):
+            self.chain_type = chain_type_value
+        elif chain_type_value is not None:
+            try:
+                self.chain_type = ChainType(chain_type_value)
+            except ValueError:
+                logger.warning(
+                    "Unknown chain type '%s' for adapter %s; keeping raw value",
+                    chain_type_value,
+                    self.name,
+                )
+                self.chain_type = chain_type_value
+        else:
+            logger.warning("Adapter %s initialized without chain_type", self.name)
+            self.chain_type = chain_type_value
+        self._contract_configs: List[Dict[str, Any]] = config.get("contracts", []) or []
+        self._abi_cache: Dict[str, Any] = {}
 
         # Connection management - use PriorityConnectionPool with URL ordering as priority
         urls = self.rpc_config["urls"]
@@ -248,10 +262,6 @@ class BaseAdapter(ABC):
             max_requests=self._requests_per_second,
             time_period=1.0
         )
-
-        # Subscription management
-        self._subscriptions: Dict[str, Dict[str, Any]] = {}
-        self._subscription_id_counter = 0
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
         """Validate adapter configuration.
@@ -334,21 +344,6 @@ class BaseAdapter(ABC):
         """
         pass
 
-    @abstractmethod
-    async def get_block_by_number(self, block_number: int) -> Dict[str, Any]:
-        """Get block information by number.
-
-        Args:
-            block_number: Block number to retrieve
-
-        Returns:
-            Block information dictionary
-
-        Raises:
-            BlockNotFoundError: If block is not found
-            BlockchainAdapterError: If request fails
-        """
-        pass
 
     @abstractmethod
     async def get_logs(
@@ -356,7 +351,8 @@ class BaseAdapter(ABC):
         address: Optional[Union[str, List[str]]] = None,
         topics: Optional[List[str]] = None,
         from_block: Optional[Union[int, str]] = None,
-        to_block: Optional[Union[int, str]] = None
+        to_block: Optional[Union[int, str]] = None,
+        event_filters: Optional[Dict[str, List[str]]] = None
     ) -> List[Dict[str, Any]]:
         """Get logs matching criteria.
 
@@ -374,97 +370,10 @@ class BaseAdapter(ABC):
         """
         pass
 
-    async def batch_get_logs(
-        self,
-        requests: List[Dict[str, Any]]
-    ) -> List[List[Dict[str, Any]]]:
-        """Get logs for multiple requests in batch.
-
-        Args:
-            requests: List of log request dictionaries
-
-        Returns:
-            List of log lists, one for each request
-
-        Raises:
-            BlockchainAdapterError: If any request fails
-        """
-        # Default implementation executes requests concurrently
-        tasks = []
-        for request in requests:
-            task = self.get_logs(**request)
-            tasks.append(task)
-
-        try:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            # Convert exceptions to error responses
-            final_results = []
-            for result in results:
-                if isinstance(result, Exception):
-                    final_results.append([])  # Return empty list on error
-                else:
-                    final_results.append(result)
-
-            return final_results
-        except Exception as e:
-            raise BlockchainAdapterError(f"Batch log retrieval failed: {e}")
-
-    async def subscribe_to_contract_events(
-        self,
-        address: str,
-        events: List[str]
-    ) -> str:
-        """Subscribe to events from a specific contract.
-
-        Args:
-            address: Contract address to subscribe to
-            events: List of event names to subscribe to
-
-        Returns:
-            Subscription ID for managing the subscription
-
-        Raises:
-            SubscriptionError: If subscription fails
-        """
-        subscription_id = f"sub_{self._subscription_id_counter}"
-        self._subscription_id_counter += 1
-
-        self._subscriptions[subscription_id] = {
-            "address": address,
-            "events": events,
-            "created_at": datetime.now(timezone.utc),
-            "active": True
-        }
-
-        # Default implementation - subclasses should override for real subscriptions
-        return subscription_id
-
-    
-    def get_metadata(self) -> Dict[str, Any]:
-        """Get adapter metadata and capabilities.
-
-        Returns:
-            Metadata dictionary with blockchain info and supported features
-        """
-        return {
-            "name": self.name,
-            "network": self.network,
-            "chain_id": getattr(self, 'chain_id', None),
-            "block_time": getattr(self, 'block_time', None),
-            "rpc_endpoints": self.rpc_config["urls"],
-            "supports": {
-                "logs": True,
-                "subscriptions": True,
-                "batch_requests": True,
-                "block_by_number": True,
-                "latest_block": True
-            },
-            "rate_limits": {
-                "requests_per_second": self._requests_per_second,
-                "burst_size": self._burst_size
-            }
-        }
+    @abstractmethod
+    def decode_event(self, event: RawEvent) -> Union[DecodedEvent, Awaitable[DecodedEvent]]:
+        """Decode a raw event into a standardized DecodedEvent."""
+        pass
 
     def _handle_blockchain_error(self, error: Exception) -> None:
         """Handle blockchain-specific errors and convert to SDK exceptions.
@@ -475,6 +384,36 @@ class BaseAdapter(ABC):
         Raises:
             BlockchainAdapterError: Converted SDK exception
         """
+        response_text = None
+        response_status = None
+        response_headers = None
+
+        response = getattr(error, "response", None)
+        if response is not None:
+            response_status = getattr(response, "status_code", None)
+            try:
+                response_text = response.text
+            except Exception:
+                response_text = None
+            try:
+                response_headers = dict(response.headers)
+            except Exception:
+                response_headers = None
+
+        logger.error(
+            "Blockchain adapter '%s' (%s) operation failed: %s (status=%s)",
+            getattr(self, "name", "unknown"),
+            getattr(self, "network", "unknown"),
+            error,
+            response_status,
+            exc_info=error,
+        )
+
+        if response_text:
+            logger.error("RPC response body: %s", response_text)
+        if response_headers:
+            logger.debug("RPC response headers: %s", response_headers)
+
         if isinstance(error, BlockchainAdapterError):
             raise error
 
@@ -505,6 +444,56 @@ class BaseAdapter(ABC):
                 details={"original_error": error_msg}
             )
 
+    def _load_contract_abi(self, abi_path: Optional[str]) -> Optional[Any]:
+        """Load and cache contract ABI definitions from disk.
+
+        Args:
+            abi_path: Path to the ABI file provided in configuration.
+
+        Returns:
+            Parsed ABI object or None if loading fails.
+        """
+        if not abi_path:
+            return None
+
+        logger = logging.getLogger(__name__)
+
+        try:
+            path = Path(abi_path).expanduser()
+        except Exception as exc:
+            logger.warning(f"Unable to expand ABI path '{abi_path}': {exc}")
+            return None
+
+        if not path.is_absolute():
+            path = Path.cwd() / path
+
+        # Resolve path for cache key (non-strict keeps original behaviour for missing files)
+        try:
+            path = path.resolve()
+        except Exception:
+            # If resolution fails we still attempt to read using the constructed path
+            pass
+
+        cache_key = str(path)
+        if cache_key in self._abi_cache:
+            return self._abi_cache[cache_key]
+
+        if not path.exists():
+            logger.warning(f"ABI file not found: {path}")
+            return None
+
+        try:
+            with path.open("r", encoding="utf-8") as abi_file:
+                abi = json.load(abi_file)
+                self._abi_cache[cache_key] = abi
+                return abi
+        except json.JSONDecodeError as exc:
+            logger.error(f"Failed to parse ABI JSON at {path}: {exc}")
+        except OSError as exc:
+            logger.error(f"Failed to read ABI file {path}: {exc}")
+
+        return None
+
     async def _execute_with_rate_limit(self, operation: Callable, *args, **kwargs) -> Any:
         """Execute operation with rate limiting and error handling.
 
@@ -530,23 +519,8 @@ class BaseAdapter(ABC):
                     result = operation(*args, **kwargs)
                 return result
             except Exception as e:
+                
                 self._handle_blockchain_error(e)
 
-    
-    @abstractmethod
-    async def get_transaction(self, transaction_hash: str) -> Dict[str, Any]:
-        """Get transaction information by hash.
-
-        Args:
-            transaction_hash: Transaction hash
-
-        Returns:
-            Transaction information
-
-        Raises:
-            TransactionError: If transaction is not found
-            BlockchainAdapterError: If request fails
-        """
-        pass
 
     

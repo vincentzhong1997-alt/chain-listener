@@ -9,7 +9,7 @@ import re
 
 # Import the classes we need to test
 from chain_listener.adapters.base import BaseAdapter
-from chain_listener.exceptions import ConnectionError, SubscriptionError, BlockchainAdapterError, RateLimitError
+from chain_listener.exceptions import ConnectionError, BlockchainAdapterError, RateLimitError
 
 # These tests are written before the implementation exists
 # They will fail initially, then we'll implement the code to make them pass
@@ -391,110 +391,6 @@ class TestBaseBlockchainAdapter:
 
         with pytest.raises(ConnectionError, match="Not connected to blockchain"):
             await adapter.get_transaction("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
-
-    def test_get_metadata(self):
-        """Test adapter metadata."""
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {
-                "urls": ["https://eth.llamarpc.com"],
-                "rate_limit": {
-                    "requests_per_second": 15,
-                    "burst_size": 30
-                }
-            }
-        }
-
-        adapter = MockBlockchainAdapter(config)
-        metadata = adapter.get_metadata()
-
-        assert metadata["name"] == "ethereum"
-        assert metadata["network"] == "mainnet"
-        assert metadata["rpc_endpoints"] == ["https://eth.llamarpc.com"]
-        assert metadata["supports"]["logs"] is True
-        assert metadata["supports"]["subscriptions"] is True
-        assert metadata["rate_limits"]["requests_per_second"] == 15
-        assert metadata["rate_limits"]["burst_size"] == 30
-
-    @pytest.mark.asyncio
-    async def test_subscription_management(self):
-        """Test contract event subscription management."""
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = MockBlockchainAdapter(config)
-
-        # Subscribe to contract events
-        contract_address = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
-        subscription_id = await adapter.subscribe_to_contract_events(
-            address=contract_address,
-            events=["Transfer", "Burn"]
-        )
-
-        assert subscription_id is not None
-        assert subscription_id.startswith("sub_")
-
-        # Check subscription was created
-        assert subscription_id in adapter._subscriptions
-        sub = adapter._subscriptions[subscription_id]
-        assert sub["address"] == contract_address
-        assert sub["events"] == ["Transfer", "Burn"]
-        assert sub["active"] is True
-
-        # Unsubscribe
-        await adapter.unsubscribe_from_events(subscription_id)
-
-        assert adapter._subscriptions[subscription_id]["active"] is False
-
-    @pytest.mark.asyncio
-    async def test_unsubscribe_nonexistent_subscription(self):
-        """Test unsubscribing from non-existent subscription raises error."""
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = MockBlockchainAdapter(config)
-
-        with pytest.raises(SubscriptionError, match="Subscription not found"):
-            await adapter.unsubscribe_from_events("nonexistent_sub")
-
-    @pytest.mark.asyncio
-    async def test_batch_get_logs(self):
-        """Test batch log retrieval."""
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = MockBlockchainAdapter(config)
-        await adapter.connect()
-
-        requests = [
-            {
-                "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-                "from_block": 18500000,
-                "to_block": 18500010
-            },
-            {
-                "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-                "from_block": 18500011,
-                "to_block": 18500020
-            }
-        ]
-
-        results = await adapter.batch_get_logs(requests)
-
-        assert isinstance(results, list)
-        assert len(results) == 2
-        for result in results:
-            assert isinstance(result, list)
 
     def test_connection_pool_priority_order(self):
         """Test that connection pool respects URL priority order."""

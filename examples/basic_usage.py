@@ -7,13 +7,14 @@ monitor blockchain events.
 import asyncio
 import logging
 from chain_listener import ChainListener, ChainListenerConfig
+from chain_listener.models import events
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-async def handle_transfer(event):
+async def handle_transfer(event: events.RawEvent):
     """Handle transfer events."""
     print(f"🔄 Transfer detected:")
     print(f"   From: {event.parameters.get('from', 'Unknown')}")
@@ -44,10 +45,14 @@ async def main():
                 "chain_id": 1,
                 "confirmation_blocks": 12,
                 "polling_interval": 15000,  # 15 seconds
-                "rpc_urls": [
-                    {"url": "https://eth-mainnet.g.alchemy.com/v2/8kg5BVMw4kdwNLo0bMkA6", "priority": 1},
-                    {"url": "https://eth-mainnet.alchemyapi.io/v2/demo", "priority": 2}
-                ],
+                "rpc": {
+                    "urls": [
+                        "https://eth-mainnet.g.alchemy.com/v2/8kg5BVMw4kdwNLo0bMkA6",
+                        "https://eth-mainnet.alchemyapi.io/v2/demo"
+                    ],
+                    "timeout": 30,
+                    "retries": 3
+                },
                 "contracts": [
                     {
                         "name": "WBTC",
@@ -139,7 +144,7 @@ async def main():
             await listener.stop_listening()
 
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.exception("❌ Error while running main example")
         await listener.stop_listening()
 
 
@@ -148,6 +153,8 @@ async def example_with_config_file():
     try:
         # Method 2: Load configuration from YAML file
         listener = ChainListener.from_config_file("examples/config.yaml")
+        print("✅ Loaded configuration from file.")
+        print("✅ Loaded configuration from file.")
 
         # Register callbacks
         listener.on_event(
@@ -157,21 +164,34 @@ async def example_with_config_file():
             lambda event: print(f"File-based transfer: {event.transaction_hash}")
         )
 
-        # Use context manager for automatic cleanup
-        async with listener as l:
-            print("Listening with file-based config...")
-            await asyncio.sleep(10)  # Listen for 10 seconds
+        print("Listening with file-based config...")
+        await listener.start_listening()
+
+        # Keep running until interrupted
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Stopping file-based listener...")
+        finally:
+            await listener.stop_listening()
 
     except Exception as e:
-        print(f"Config file example failed: {e}")
+        logger.exception("Config file example failed")
 
 
 if __name__ == "__main__":
     print("🚀 Chain Listener SDK - Basic Usage Example")
     print("=" * 60)
 
-    # Run the main example
-    asyncio.run(main())
+    # # Run the programmatic configuration example first
+    # try:
+    #     asyncio.run(main())
+    # except KeyboardInterrupt:
+    #     logger.info("Main example interrupted by user")
 
-    # Uncomment to run config file example
-    # asyncio.run(example_with_config_file())
+    # Then run the config file example to showcase loading from YAML
+    try:
+        asyncio.run(example_with_config_file())
+    except KeyboardInterrupt:
+        logger.info("File-based example interrupted by user")

@@ -8,6 +8,7 @@ import pytest
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch
 from typing import Dict, Any
+from copy import deepcopy
 
 from chain_listener.core.listener import ChainListener
 from chain_listener.core.adapter_registry import AdapterRegistry
@@ -15,6 +16,16 @@ from chain_listener.core.callback_registry import CallbackRegistry
 from chain_listener.core.event_processor import EventProcessor
 from chain_listener.models.config import ChainListenerConfig, ChainConfig
 from chain_listener.models.events import ChainType, RawEvent, DecodedEvent
+
+DEFAULT_RPC_CONFIG = {
+    "urls": ["https://eth.llamarpc.com"],
+    "timeout": 30,
+    "retries": 3,
+    "rate_limit": {
+        "requests_per_second": 10,
+        "burst_size": 20
+    }
+}
 
 
 class TestCoreComponentIntegration:
@@ -30,10 +41,7 @@ class TestCoreComponentIntegration:
                     chain_id=1,
                     confirmation_blocks=1,
                     polling_interval=1000,
-                    rpc_urls=[{
-                        "url": "https://eth.llamarpc.com",
-                        "priority": 1
-                    }],
+                    rpc=deepcopy(DEFAULT_RPC_CONFIG),
                     contracts=[]
                 )
             }
@@ -53,9 +61,9 @@ class TestCoreComponentIntegration:
             callback1 = Mock()
             callback2 = Mock()
 
-            listener.on_event("ethereum", "0x123...", "Transfer", callback1)
-            listener.on_event("ethereum", "0x123...", "Approval", callback2)
-            listener.on_event("ethereum", "0x456...", "Transfer", callback2)
+            listener.on_event("ethereum", "0x1230000000000000000000000000000000000123", "Transfer", callback1)
+            listener.on_event("ethereum", "0x1230000000000000000000000000000000000123", "Approval", callback2)
+            listener.on_event("ethereum", "0x4560000000000000000000000000000000000456", "Transfer", callback2)
 
             # Check registry stats
             stats = listener._callback_registry.get_stats()
@@ -82,7 +90,7 @@ class TestCoreComponentIntegration:
                     block_hash="0xabc...",
                     transaction_hash="0xdef...",
                     log_index=0,
-                    contract_address="0x123...",
+                    contract_address="0x1230000000000000000000000000000000000123",
                     raw_data={},
                     timestamp=1640995200
                 )
@@ -92,7 +100,7 @@ class TestCoreComponentIntegration:
             mock_adapter = Mock()
             mock_adapter.decode_event = AsyncMock(return_value=DecodedEvent(
                 chain_type=ChainType.ETHEREUM,
-                contract_address="0x123...",
+                contract_address="0x1230000000000000000000000000000000000123",
                 event_name="Transfer",
                 parameters={"from": "0x111...", "to": "0x222...", "value": "1000"},
                 block_number=12345,
@@ -101,48 +109,45 @@ class TestCoreComponentIntegration:
                 timestamp=1640995200
             ))
 
-            with patch.object(listener._event_processor, '_get_adapter', return_value=mock_adapter):
-                # Process events
-                results = await listener._event_processor.process_events(raw_events)
+            listener._adapter_registry.get_adapter = Mock(return_value=mock_adapter)
 
-                assert len(results) == 1
-                assert results[0].success is True
-                assert results[0].decoded_event.event_name == "Transfer"
+            # Process events
+            results = await listener._event_processor.process_events(raw_events)
+
+            assert len(results) == 1
+            assert results[0].success is True
+            assert results[0].decoded_event.event_name == "Transfer"
 
     def test_adapter_registry_integration(self, simple_config):
         """Test integration between ChainListener and AdapterRegistry."""
-        with patch('chain_listener.core.listener.AdapterRegistry') as MockRegistry:
-            mock_registry_instance = MockRegistry.return_value
-            mock_registry_instance.register_adapter = Mock()
-            mock_registry_instance.get_adapter_status = Mock(return_value={"ethereum": {"connected": False}})
+        with patch('chain_listener.core.listener.adapter_registry') as mock_registry:
+            mock_registry.register_adapter = Mock()
+            mock_registry.get_adapter_status = Mock(return_value={"ethereum": {"connected": False}})
 
             listener = ChainListener(simple_config)
 
-            # Check that adapter registry was initialized
-            assert listener._adapter_registry is not None
-            assert mock_registry_instance.register_adapter.called
+            # Check that adapter registry was initialized and used
+            assert listener._adapter_registry is mock_registry
+            mock_registry.register_adapter.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_lifecycle_management_integration(self, simple_config):
         """Test start/stop lifecycle integration."""
         with patch('chain_listener.core.listener.adapter_registry') as mock_registry:
             mock_registry.register_adapter = Mock()
-            mock_registry.connect_all = AsyncMock()
-            mock_registry.disconnect_all = AsyncMock()
             mock_registry.get_adapter = Mock(return_value=Mock())
             mock_registry.get_adapter_status = Mock(return_value={})
 
             listener = ChainListener(simple_config)
 
-            # Test start listening
-            await listener.start_listening()
-            assert listener._is_listening
-            mock_registry.connect_all.assert_called_once()
+            # Patch internal listening implementation to avoid actual loop
+            with patch.object(listener, '_listen_to_chain', AsyncMock()) as mock_listen:
+                await listener.start_listening()
+                assert listener._is_listening
+                mock_listen.assert_called_once()
 
-            # Test stop listening
-            await listener.stop_listening()
-            assert not listener._is_listening
-            mock_registry.disconnect_all.assert_called_once()
+                await listener.stop_listening()
+                assert not listener._is_listening
 
     @pytest.mark.asyncio
     async def test_system_status_integration(self, simple_config):
@@ -195,7 +200,7 @@ class TestCoreComponentIntegration:
             with pytest.raises(Exception):
                 listener.on_event(
                     chain_name="invalid_chain",
-                    contract_address="0x123...",
+                    contract_address="0x1230000000000000000000000000000000000123",
                     event_name="Transfer",
                     callback=Mock()
                 )
@@ -224,7 +229,7 @@ class TestCoreComponentIntegration:
                     block_hash="0xabc...",
                     transaction_hash="0xdef...",
                     log_index=0,
-                    contract_address="0x123...",
+                    contract_address="0x1230000000000000000000000000000000000123",
                     raw_data={},
                     timestamp=1640995200
                 ),
@@ -234,7 +239,7 @@ class TestCoreComponentIntegration:
                     block_hash="0xabc...",
                     transaction_hash="0xdef...",
                     log_index=0,
-                    contract_address="0x123...",
+                    contract_address="0x1230000000000000000000000000000000000123",
                     raw_data={},
                     timestamp=1640995200
                 )
@@ -244,7 +249,7 @@ class TestCoreComponentIntegration:
             mock_adapter = Mock()
             mock_adapter.decode_event = AsyncMock(return_value=DecodedEvent(
                 chain_type=ChainType.ETHEREUM,
-                contract_address="0x123...",
+                contract_address="0x1230000000000000000000000000000000000123",
                 event_name="Transfer",
                 parameters={},
                 block_number=12345,
@@ -253,13 +258,17 @@ class TestCoreComponentIntegration:
                 timestamp=1640995200
             ))
 
-            with patch.object(listener._event_processor, '_get_adapter', return_value=mock_adapter):
-                # Process duplicate events
-                results = await listener._event_processor.process_events(duplicate_events)
+            listener._adapter_registry.get_adapter = Mock(return_value=mock_adapter)
 
-                # Should only process one due to deduplication
-                success_results = [r for r in results if r.success]
-                assert len(success_results) == 1
+            # Process first event
+            first_result = await listener._event_processor.process_events([duplicate_events[0]])
+            assert first_result[0].success is True
+            assert first_result[0].decoded_event is not None
+
+            # Process duplicate event, should be skipped due to deduplication cache
+            second_result = await listener._event_processor.process_events([duplicate_events[1]])
+            assert second_result[0].success is True
+            assert second_result[0].decoded_event is None
 
     @pytest.mark.asyncio
     async def test_callback_execution_integration(self, simple_config):
@@ -279,7 +288,7 @@ class TestCoreComponentIntegration:
                 callback_calls.append(event)
                 return f"Processed: {event.transaction_hash}"
 
-            listener.on_event("ethereum", "0x123...", "Transfer", test_callback)
+            listener.on_event("ethereum", "0x1230000000000000000000000000000000000123", "Transfer", test_callback)
 
             # Create event
             raw_event = RawEvent(
@@ -288,7 +297,7 @@ class TestCoreComponentIntegration:
                 block_hash="0xabc...",
                 transaction_hash="0xdef...",
                 log_index=0,
-                contract_address="0x123...",
+                contract_address="0x1230000000000000000000000000000000000123",
                 raw_data={},
                 timestamp=1640995200
             )
@@ -297,7 +306,7 @@ class TestCoreComponentIntegration:
             mock_adapter = Mock()
             mock_adapter.decode_event = AsyncMock(return_value=DecodedEvent(
                 chain_type=ChainType.ETHEREUM,
-                contract_address="0x123...",
+                contract_address="0x1230000000000000000000000000000000000123",
                 event_name="Transfer",
                 parameters={},
                 block_number=12345,
@@ -306,18 +315,19 @@ class TestCoreComponentIntegration:
                 timestamp=1640995200
             ))
 
-            with patch.object(listener._event_processor, '_get_adapter', return_value=mock_adapter):
-                # Process event
-                results = await listener._event_processor.process_events([raw_event])
+            listener._adapter_registry.get_adapter = Mock(return_value=mock_adapter)
 
-                # Verify processing results
-                assert len(results) == 1
-                assert results[0].success is True
+            # Process event
+            results = await listener._event_processor.process_events([raw_event])
 
-                # Verify callback was actually called with correct event data
-                assert len(callback_calls) == 1
-                assert callback_calls[0].chain_type == ChainType.ETHEREUM
-                assert callback_calls[0].contract_address == "0x123..."
-                assert callback_calls[0].event_name == "Transfer"
-                assert callback_calls[0].block_number == 12345
-                assert callback_calls[0].transaction_hash == "0xdef..."
+            # Verify processing results
+            assert len(results) == 1
+            assert results[0].success is True
+
+            # Verify callback was actually called with correct event data
+            assert len(callback_calls) == 1
+            assert callback_calls[0].chain_type == ChainType.ETHEREUM
+            assert callback_calls[0].contract_address == "0x1230000000000000000000000000000000000123"
+            assert callback_calls[0].event_name == "Transfer"
+            assert callback_calls[0].block_number == 12345
+            assert callback_calls[0].transaction_hash == "0xdef..."

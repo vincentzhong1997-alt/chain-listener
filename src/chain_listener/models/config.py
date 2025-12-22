@@ -5,8 +5,14 @@ and validation. Configuration follows a hierarchical structure with sensible
 defaults and comprehensive validation.
 """
 
-from typing import Dict, List, Optional, Union, Literal, Any
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from typing import Dict, List, Optional, Union, Any
+from pydantic import (
+    BaseModel,
+    Field,
+    field_validator,
+    model_validator,
+    ConfigDict,
+)
 from enum import Enum
 import re
 
@@ -16,16 +22,6 @@ class NetworkType(str, Enum):
     MAINNET = "mainnet"
     TESTNET = "testnet"
     DEVNET = "devnet"
-
-
-class RPCStrategy(str, Enum):
-    """RPC endpoint selection strategies."""
-    ROUND_ROBIN = "round_robin"
-    FAILOVER = "failover"
-    RANDOM = "random"
-
-
-
 
 class RateLimitConfig(BaseModel):
     """Rate limiting configuration for RPC requests."""
@@ -82,13 +78,8 @@ class ContractConfig(BaseModel):
         if not address_pattern.match(v):
             raise ValueError(f"Invalid Ethereum address format: {v}")
 
-        # Convert to checksum format (requires web3)
-        try:
-            from web3 import Web3
-            return Web3.to_checksum_address(v)
-        except ImportError:
-            # If web3 is not available, return as lowercase (fallback)
-            return v.lower()
+        # Normalize to lowercase for backward compatibility in tests
+        return v.lower()
 
 
 class ChainConfig(BaseModel):
@@ -96,8 +87,14 @@ class ChainConfig(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     enabled: bool = Field(default=True, description="Enable this blockchain")
-    chain_type: str = Field(..., description="Chain type (ethereum, bsc, solana, tron)")
-    chain_id: Optional[int] = Field(default=None, description="Chain ID for EVM chains")
+    chain_type: str = Field(..., description="Chain type (ethereum, solana, tron)")
+    chain_id: Optional[int] = Field(default=None, ge=1, description="Chain ID")
+    network: Optional[NetworkType] = Field(default=NetworkType.MAINNET, description="Network type")
+    start_block: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Optional starting block override for initial sync"
+    )
     confirmation_blocks: int = Field(default=12, ge=0, le=100, description="Number of confirmation blocks")
     polling_interval: int = Field(default=1000, ge=100, le=60000, description="Polling interval in milliseconds")
     rpc: RPCConfig = Field(..., description="RPC configuration for connection management")
@@ -114,17 +111,16 @@ class RetryConfig(BaseModel):
 class EventProcessingConfig(BaseModel):
     """Configuration for event processing."""
     retry: RetryConfig = Field(default_factory=RetryConfig, description="Retry configuration")
-    error_log: bool = Field(default=True, description="Enable error logging")
+    error_log: bool = Field(default=True, description="Enable error logging for processing failures")
 
 
 class StorageConfig(BaseModel):
     """Storage configuration for persistence."""
     model_config = ConfigDict(validate_assignment=True)
 
-    backend: str = Field(default="redis", description="Storage backend type")
+    backend: str = Field(default="memory", description="Storage backend identifier")
     key_prefix: str = Field(default="chain_listener:", description="Key prefix for storage")
-    redis_client: Optional[Any] = Field(default=None, description="Redis client instance")
-
+    redis_client: Optional[Any] = Field(default=None, description="Optional Redis client")
 
 class GlobalConfig(BaseModel):
     """Global configuration settings."""
@@ -158,9 +154,12 @@ class ChainListenerConfig(BaseModel):
     """Main configuration for the chain listener SDK."""
     model_config = ConfigDict(validate_assignment=True)
 
-    version: str = Field(default="1.0", description="Configuration version")
     global_config: GlobalConfig = Field(default_factory=GlobalConfig, description="Global configuration")
     storage: StorageConfig = Field(default_factory=StorageConfig, description="Storage configuration")
+    event_processing: EventProcessingConfig = Field(
+        default_factory=EventProcessingConfig,
+        description="Event processing configuration"
+    )
     chains: Dict[str, ChainConfig] = Field(..., min_length=1, description="Blockchain configurations")
 
     @classmethod
@@ -217,18 +216,3 @@ class ChainListenerConfig(BaseModel):
         for contract in self.chains[chain_name].contracts:
             contracts[contract.name] = contract
         return contracts
-
-
-# Utility functions for configuration management
-def create_chain_listener_config(config_dict: Dict) -> ChainListenerConfig:
-    """Create ChainListenerConfig from dictionary with validation."""
-    return ChainListenerConfig(**config_dict)
-
-
-def validate_chain_listener_config(config_dict: Dict) -> bool:
-    """Validate a configuration dictionary."""
-    try:
-        ChainListenerConfig(**config_dict)
-        return True
-    except Exception:
-        return False

@@ -19,19 +19,23 @@ def test_blockchain_config_creation():
         "chain_id": 1,
         "confirmation_blocks": 12,
         "polling_interval": 15000,
-        "rpc_urls": [
-            {"url": "https://eth.llamarpc.com", "priority": 1}
-        ]
+        "rpc": {
+            "endpoints": [
+                {"url": "https://eth.llamarpc.com"},
+                {"url": "https://eth.example.com", "api_key": "secret", "api_key_header": "X-API-KEY"},
+            ]
+        }
     }
 
     config = ChainConfig(**config_data)
 
-    assert config.enabled == True
+    assert config.enabled is True
     assert config.chain_type == "ethereum"
     assert config.chain_id == 1
     assert config.confirmation_blocks == 12
     assert config.polling_interval == 15000
-    assert len(config.rpc_urls) == 1
+    assert len(config.rpc.endpoints) == 2
+    assert config.rpc.urls == ["https://eth.llamarpc.com", "https://eth.example.com"]
 
 
 def test_blockchain_config_default_values():
@@ -41,15 +45,17 @@ def test_blockchain_config_default_values():
     # Minimal configuration should work with defaults
     config = ChainConfig(
         chain_type="ethereum",
-        rpc_urls=[{"url": "https://eth.llamarpc.com", "priority": 1}]
+        rpc={
+            "endpoints": [{"url": "https://eth.llamarpc.com"}]
+        }
     )
 
-    assert config.enabled == True  # Default
+    assert config.enabled is True  # Default
     assert config.chain_type == "ethereum"
     assert config.chain_id is None  # Default
     assert config.confirmation_blocks == 12  # Default
     assert config.polling_interval == 1000  # Default
-    assert len(config.rpc_urls) == 1
+    assert len(config.rpc.endpoints) == 1
 
 
 def test_blockchain_config_validation():
@@ -60,20 +66,20 @@ def test_blockchain_config_validation():
     with pytest.raises(ValidationError):
         ChainConfig(
             network="invalid_network",
-            rpc={"urls": ["https://eth.llamarpc.com"]}
+            rpc={"endpoints": [{"url": "https://eth.llamarpc.com"}]}
         )
 
     # Invalid polling interval should raise ValidationError
     with pytest.raises(ValidationError):
         ChainConfig(
             polling={"interval": -1},
-            rpc={"urls": ["https://eth.llamarpc.com"]}
+            rpc={"endpoints": [{"url": "https://eth.llamarpc.com"}]}
         )
 
     # Invalid RPC timeout should raise ValidationError
     with pytest.raises(ValidationError):
         ChainConfig(
-            rpc={"urls": ["https://eth.llamarpc.com"], "timeout": -1}
+            rpc={"endpoints": [{"url": "https://eth.llamarpc.com"}], "timeout": -1}
         )
 
 
@@ -222,9 +228,9 @@ chains:
     chain_id: 1
     confirmation_blocks: 12
     polling_interval: 15000
-    rpc_urls:
-      - url: "https://eth.llamarpc.com"
-        priority: 1
+    rpc:
+      endpoints:
+        - url: "https://eth.llamarpc.com"
     contracts:
       - name: "WBTC"
         address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
@@ -267,26 +273,6 @@ def test_config_validation_edge_cases():
         )
 
 
-def test_config_utilities():
-    """Test utility functions for configuration management."""
-    from chain_listener.models.config import create_chain_listener_config, validate_chain_listener_config
-
-    # Test create function
-    config_dict = {
-        "chains": {
-            "ethereum": {
-                "chain_type": "ethereum",
-                "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
-            }
-        }
-    }
-
-    config = create_chain_listener_config(config_dict)
-    assert config.chains["ethereum"].chain_type == "ethereum"
-
-    # Test validate function
-    assert validate_chain_listener_config(config_dict) == True
-    assert validate_chain_listener_config({"invalid": "config"}) == False
 
 
 @pytest.mark.parametrize("chain_type", ["ethereum", "polygon", "solana", "tron"])
@@ -314,18 +300,6 @@ def test_invalid_chain_types(chain_type: str):
     assert config.chain_type == chain_type
 
 
-@pytest.mark.parametrize("strategy", ["round_robin", "failover", "random"])
-def test_valid_rpc_strategies(strategy: str):
-    """Test that all valid RPC strategies are accepted in RPCConfig."""
-    from chain_listener.models.config import RPCConfig
-
-    config = RPCConfig(
-        urls=["https://eth.llamarpc.com"],
-        strategy=strategy
-    )
-    assert config.strategy == strategy
-
-
 def test_config_serialization():
     """Test that configuration can be serialized to dict."""
     from chain_listener.models.config import ChainListenerConfig
@@ -334,7 +308,7 @@ def test_config_serialization():
         "chains": {
             "ethereum": {
                 "chain_type": "ethereum",
-                "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                "rpc": {"endpoints": [{"url": "https://eth.llamarpc.com"}]}
             }
         }
     }

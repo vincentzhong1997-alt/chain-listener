@@ -9,7 +9,7 @@ import json
 import hashlib
 from typing import Dict, List, Optional, Union, Any, Set
 from datetime import datetime, timezone
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from enum import Enum
 from dataclasses import dataclass
 
@@ -441,110 +441,3 @@ class EventBatch(BaseModel):
         return chain_batches
 
 
-# Utility functions for event processing
-def create_event_from_web3_log(log_data: Dict[str, Any], chain_name: ChainName) -> BlockchainEvent:
-    """Create a BlockchainEvent from Web3 log data."""
-    return BlockchainEvent(
-        event_type=log_data.get("event", "Unknown"),
-        contract_address=log_data.get("address", ""),
-        chain_name=chain_name,
-        transaction_hash=log_data.get("transactionHash", ""),
-        block_number=log_data.get("blockNumber"),
-        block_timestamp=log_data.get("blockTimestamp"),
-        log_index=log_data.get("logIndex"),
-        transaction_index=log_data.get("transactionIndex"),
-        from_address=log_data.get("args", {}).get("from"),
-        to_address=log_data.get("args", {}).get("to"),
-        value=str(log_data.get("args", {}).get("value", "0")),
-        raw_event=log_data
-    )
-
-
-def calculate_event_signature(event: Dict[str, Any]) -> str:
-    """Calculate event signature from event data."""
-    if "signature" in event:
-        return event["signature"]
-
-    # Calculate from event name and parameters
-    event_name = event.get("event", "")
-    if not event_name:
-        return ""
-
-    # For standard events, return common signatures
-    if event_name == "Transfer":
-        return "Transfer(address,address,uint256)"
-    elif event_name == "Burn":
-        return "Burn(address,uint256)"
-    elif event_name == "Mint":
-        return "Mint(address,uint256)"
-    elif event_name == "Approval":
-        return "Approval(address,address,uint256)"
-    else:
-        return event_name
-
-
-def normalize_address(address: str) -> str:
-    """Normalize blockchain address format."""
-    if not address:
-        return ""
-
-    # Remove any whitespace and convert to lowercase
-    address = address.strip().lower()
-
-    # Add 0x prefix if missing for Ethereum-like addresses
-    if len(address) == 40 and not address.startswith("0x"):
-        address = "0x" + address
-
-    return address
-
-
-def validate_event_chain(event: BlockchainEvent, expected_chain: ChainName) -> bool:
-    """Validate that an event belongs to the expected chain."""
-    return event.chain_name == expected_chain
-
-
-def filter_events_by_contracts(events: List[BlockchainEvent], contract_addresses: List[str]) -> List[BlockchainEvent]:
-    """Filter events by contract addresses."""
-    normalized_addresses = [normalize_address(addr) for addr in contract_addresses]
-
-    return [
-        event for event in events
-        if normalize_address(event.contract_address) in normalized_addresses
-    ]
-
-
-def filter_events_by_time_range(
-    events: List[BlockchainEvent],
-    start_timestamp: Optional[int] = None,
-    end_timestamp: Optional[int] = None
-) -> List[BlockchainEvent]:
-    """Filter events by timestamp range."""
-    filtered_events = []
-
-    for event in events:
-        if event.block_timestamp is None:
-            continue
-
-        if start_timestamp and event.block_timestamp < start_timestamp:
-            continue
-
-        if end_timestamp and event.block_timestamp > end_timestamp:
-            continue
-
-        filtered_events.append(event)
-
-    return filtered_events
-
-
-def deduplicate_events(events: List[BlockchainEvent]) -> List[BlockchainEvent]:
-    """Remove duplicate events from a list."""
-    seen_hashes: Set[str] = set()
-    unique_events: List[BlockchainEvent] = []
-
-    for event in events:
-        event_hash = event.get_event_hash()
-        if event_hash not in seen_hashes:
-            seen_hashes.add(event_hash)
-            unique_events.append(event)
-
-    return unique_events

@@ -1,9 +1,14 @@
 """Test Ethereum blockchain adapter following TDD principles."""
 
+import json
 import pytest
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
 from typing import Dict, Any, List
 from datetime import datetime, timezone
+
+from web3 import Web3
+
+from chain_listener.models.events import ChainType, RawEvent
 
 # These tests are written before implementation exists
 # They will fail initially, then we'll implement the code to make them pass
@@ -531,158 +536,6 @@ class TestEthereumAdapter:
                 await adapter.get_transaction(transaction_hash)
 
     @pytest.mark.asyncio
-    async def test_subscribe_to_contract_events(self):
-        """Test subscribing to contract events."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = EthereumAdapter(config)
-
-        contract_address = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
-
-        with patch('chain_listener.adapters.ethereum.Web3') as mock_web3_class:
-            mock_web3 = Mock()
-            mock_web3_class.return_value = mock_web3
-            mock_web3.is_connected.return_value = True
-
-            # Mock contract creation and event subscription
-            mock_contract = Mock()
-            mock_web3.eth.contract.return_value = mock_contract
-            mock_contract.events.Transfer = Mock()
-            mock_contract.events.Transfer.create_filter = Mock()
-            mock_filter = Mock()
-            mock_contract.events.Transfer.create_filter.return_value = mock_filter
-
-            # Set up connected state
-            adapter._w3 = mock_web3
-            adapter._connected = True
-
-            subscription_id = await adapter.subscribe_to_contract_events(
-                address=contract_address,
-                events=["Transfer"]
-            )
-
-            assert subscription_id is not None
-            assert isinstance(subscription_id, str)
-            assert subscription_id in adapter._subscriptions
-
-            # Verify contract was created with correct address
-            mock_web3.eth.contract.assert_called_with(address=contract_address)
-
-    @pytest.mark.asyncio
-    async def test_subscribe_to_multiple_events(self):
-        """Test subscribing to multiple contract events."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = EthereumAdapter(config)
-
-        contract_address = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
-
-        with patch('chain_listener.adapters.ethereum.Web3') as mock_web3_class:
-            mock_web3 = Mock()
-            mock_web3_class.return_value = mock_web3
-            mock_web3.is_connected.return_value = True
-
-            # Mock contract creation and event subscription
-            mock_contract = Mock()
-            mock_web3.eth.contract.return_value = mock_contract
-
-            # Mock multiple events
-            mock_contract.events.Transfer = Mock()
-            mock_contract.events.Burn = Mock()
-            mock_contract.events.Mint = Mock()
-
-            mock_contract.events.Transfer.create_filter = Mock()
-            mock_contract.events.Burn.create_filter = Mock()
-            mock_contract.events.Mint.create_filter = Mock()
-
-            # Set up connected state
-            adapter._w3 = mock_web3
-            adapter._connected = True
-
-            subscription_id = await adapter.subscribe_to_contract_events(
-                address=contract_address,
-                events=["Transfer", "Burn", "Mint"]
-            )
-
-            assert subscription_id is not None
-            assert isinstance(subscription_id, str)
-
-            # Verify all event filters were created
-            mock_contract.events.Transfer.create_filter.assert_called_once()
-            mock_contract.events.Burn.create_filter.assert_called_once()
-            mock_contract.events.Mint.create_filter.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_batch_get_logs(self):
-        """Test batch log retrieval for performance."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = EthereumAdapter(config)
-
-        with patch('chain_listener.adapters.ethereum.Web3') as mock_web3_class:
-            mock_web3 = Mock()
-            mock_web3_class.return_value = mock_web3
-            mock_web3.is_connected.return_value = True
-
-            # Mock the eth.get_logs method to return different logs for different requests
-            def mock_get_logs(params):
-                if params["fromBlock"] == 18500000:
-                    return [{"address": "0x123", "blockNumber": 18500000}]
-                else:
-                    return [{"address": "0x456", "blockNumber": 18500011}]
-
-            mock_web3.eth.get_logs = AsyncMock(side_effect=mock_get_logs)
-
-            # Set up connected state
-            adapter._w3 = mock_web3
-            adapter._connected = True
-
-            # Create batch requests
-            requests = [
-                {
-                    "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-                    "from_block": 18500000,
-                    "to_block": 18500010
-                },
-                {
-                    "address": "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
-                    "from_block": 18500011,
-                    "to_block": 18500020
-                }
-            ]
-
-            results = await adapter.batch_get_logs(requests)
-
-            assert isinstance(results, list)
-            assert len(results) == 2
-
-            # First request result
-            assert len(results[0]) == 1
-            assert results[0][0]["blockNumber"] == 18500000
-
-            # Second request result
-            assert len(results[1]) == 1
-            assert results[1][0]["blockNumber"] == 18500011
-
-    @pytest.mark.asyncio
     async def test_events_stream(self):
         """Test streaming events in real-time."""
         from chain_listener.adapters.ethereum import EthereumAdapter
@@ -815,26 +668,6 @@ class TestEthereumAdapter:
                 assert isinstance(event["logIndex"], int)
                 assert isinstance(event["topics"], list)
 
-    def test_ethereum_adapter_metadata(self):
-        """Test Ethereum adapter metadata."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = EthereumAdapter(config)
-
-        metadata = adapter.get_metadata()
-
-        assert metadata["name"] == "ethereum"
-        assert metadata["network"] == "mainnet"
-        assert metadata["chain_id"] == 1
-        assert metadata["block_time"] == 12
-        assert "logs" in metadata["supports"]
-        assert "subscriptions" in metadata["supports"]
         assert "batch_requests" in metadata["supports"]
         assert metadata["supports"]["logs"] is True
         assert metadata["supports"]["subscriptions"] is True
@@ -883,8 +716,7 @@ class TestEthereumAdapter:
                     "https://eth1.llamarpc.com",
                     "https://eth2.llamarpc.com",
                     "https://eth3.llamarpc.com"
-                ],
-                "strategy": "round_robin"
+                ]
             }
         }
 
@@ -947,3 +779,183 @@ class TestEthereumAdapter:
         assert adapter_with_custom_limit._requests_per_second == 10
         assert adapter_with_custom_limit._burst_size == 20
         assert isinstance(adapter_with_custom_limit._rate_limiter, DualRateLimiter)
+
+    @pytest.mark.asyncio
+    async def test_get_logs_builds_topic_filters_from_event_filters(self, tmp_path):
+        """`get_logs` should translate event names to topic filters."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        abi_path = tmp_path / "erc20.json"
+        abi_path.write_text(json.dumps([
+            {
+                "type": "event",
+                "name": "Transfer",
+                "inputs": [
+                    {"name": "from", "type": "address", "indexed": True},
+                    {"name": "to", "type": "address", "indexed": True},
+                    {"name": "value", "type": "uint256", "indexed": False},
+                ]
+            }
+        ]))
+
+        config = {
+            "name": "ethereum",
+            "network": "mainnet",
+            "rpc": {"urls": ["https://eth.llamarpc.com"]},
+            "contracts": [
+                {
+                    "name": "ERC20",
+                    "address": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+                    "abi_path": str(abi_path),
+                    "events": ["Transfer"],
+                }
+            ],
+        }
+
+        adapter = EthereumAdapter(config)
+
+        captured_params: Dict[str, Any] = {}
+
+        class DummyEth:
+            def get_logs(self_inner, params):
+                captured_params["value"] = params
+                return []
+
+        dummy_w3 = type("DummyWeb3", (), {"eth": DummyEth()})()
+
+        async def fake_execute(operation, *args, **kwargs):
+            return operation(dummy_w3)
+
+        adapter._execute_with_priority_routing = fake_execute  # type: ignore[assignment]
+
+        checksum_address = Web3.to_checksum_address("0x2260fac5e5542a773aa44fbcfedf7c193bc2c599")
+        await adapter.get_logs(
+            address=checksum_address,
+            from_block=1,
+            to_block=2,
+            event_filters={checksum_address: ["Transfer"]},
+        )
+
+        assert "topics" in captured_params["value"]
+        assert captured_params["value"]["topics"] == [[
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+        ]]
+
+    @pytest.mark.asyncio
+    async def test_get_logs_raises_error_if_event_missing_in_abi(self, tmp_path):
+        """Unknown events in filters should raise to alert misconfiguration."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+        from chain_listener.exceptions import BlockchainAdapterError
+
+        abi_path = tmp_path / "erc20.json"
+        abi_path.write_text(json.dumps([
+            {
+                "type": "event",
+                "name": "Transfer",
+                "inputs": [
+                    {"name": "from", "type": "address", "indexed": True},
+                    {"name": "to", "type": "address", "indexed": True},
+                    {"name": "value", "type": "uint256", "indexed": False},
+                ]
+            }
+        ]))
+
+        config = {
+            "name": "ethereum",
+            "network": "mainnet",
+            "rpc": {"urls": ["https://eth.llamarpc.com"]},
+            "contracts": [
+                {
+                    "name": "ERC20",
+                    "address": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+                    "abi_path": str(abi_path),
+                    "events": ["Transfer"],
+                }
+            ],
+        }
+
+        adapter = EthereumAdapter(config)
+
+        class DummyEth:
+            def get_logs(self_inner, params):
+                return []
+
+        dummy_w3 = type("DummyWeb3", (), {"eth": DummyEth()})()
+
+        async def fake_execute(operation, *args, **kwargs):
+            return operation(dummy_w3)
+
+        adapter._execute_with_priority_routing = fake_execute  # type: ignore[assignment]
+
+        checksum_address = Web3.to_checksum_address("0x2260fac5e5542a773aa44fbcfedf7c193bc2c599")
+        with pytest.raises(BlockchainAdapterError, match="Event 'Approval' is not defined"):
+            await adapter.get_logs(
+                address=checksum_address,
+                event_filters={checksum_address: ["Approval"]},
+            )
+
+    def test_decode_event_with_loaded_abi(self, tmp_path):
+        """Ensure ABI files are loaded and used for decoding."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        abi_path = tmp_path / "erc20.json"
+        abi_definition = [
+            {
+                "anonymous": False,
+                "inputs": [
+                    {"indexed": True, "internalType": "address", "name": "from", "type": "address"},
+                    {"indexed": True, "internalType": "address", "name": "to", "type": "address"},
+                    {"indexed": False, "internalType": "uint256", "name": "value", "type": "uint256"},
+                ],
+                "name": "Transfer",
+                "type": "event",
+            }
+        ]
+        abi_path.write_text(json.dumps(abi_definition))
+
+        contract_address = "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+        config = {
+            "name": "ethereum",
+            "network": "mainnet",
+            "rpc": {"urls": ["https://eth.llamarpc.com"]},
+            "contracts": [
+                {
+                    "name": "WBTC",
+                    "address": contract_address,
+                    "abi_path": str(abi_path),
+                    "events": ["Transfer"],
+                }
+            ],
+        }
+
+        adapter = EthereumAdapter(config)
+
+        def pad_address(addr: str) -> str:
+            return "0x" + ("0" * 24) + addr[2:]
+
+        from_address = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        to_address = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        raw_event = RawEvent(
+            chain_type=ChainType.ETHEREUM,
+            block_number=100,
+            block_hash="0x" + "ab" * 32,
+            transaction_hash="0x" + "cd" * 32,
+            log_index=0,
+            contract_address=contract_address,
+            raw_data={
+                "topics": [
+                    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                    pad_address(from_address),
+                    pad_address(to_address),
+                ],
+                "data": "0x" + "0" * 60 + "03e8",
+            },
+            timestamp=1700000000,
+        )
+
+        decoded = adapter.decode_event(raw_event)
+
+        assert decoded.event_name == "Transfer"
+        assert decoded.parameters["value"] == 1000
+        assert decoded.parameters["from"].lower() == from_address.lower()
+        assert decoded.parameters["to"].lower() == to_address.lower()

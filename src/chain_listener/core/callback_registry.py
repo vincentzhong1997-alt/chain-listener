@@ -69,32 +69,7 @@ class CallbackRegistry:
 
         logger.info(f"Registered callback for {event_name} on {contract_address}")
 
-    def unregister_callback(
-        self,
-        contract_address: str,
-        event_name: str
-    ) -> Optional[Callable]:
-        """Unregister a callback function.
-
-        Args:
-            contract_address: The contract address
-            event_name: The event name
-
-        Returns:
-            Optional[Callable]: The removed callback function, or None if not found
-        """
-        key = self._create_key(contract_address, event_name)
-
-        callback = self._callbacks.pop(key, None)
-        self._callback_metadata.pop(key, None)
-
-        if callback:
-            logger.info(f"Unregistered callback for {event_name} on {contract_address}")
-        else:
-            logger.warning(f"No callback found for {event_name} on {contract_address}")
-
-        return callback
-
+  
     def get_callback(
         self,
         contract_address: str,
@@ -112,40 +87,8 @@ class CallbackRegistry:
         key = self._create_key(contract_address, event_name)
         return self._callbacks.get(key)
 
-    def get_callback_metadata(
-        self,
-        contract_address: str,
-        event_name: str
-    ) -> Optional[Dict[str, Any]]:
-        """Get metadata for a callback function.
-
-        Args:
-            contract_address: The contract address
-            event_name: The event name
-
-        Returns:
-            Optional[Dict[str, Any]]: The metadata, or None if not found
-        """
-        key = self._create_key(contract_address, event_name)
-        return self._callback_metadata.get(key)
-
-    def has_callback(
-        self,
-        contract_address: str,
-        event_name: str
-    ) -> bool:
-        """Check if a callback is registered for a specific event.
-
-        Args:
-            contract_address: The contract address
-            event_name: The event name
-
-        Returns:
-            bool: True if callback exists, False otherwise
-        """
-        key = self._create_key(contract_address, event_name)
-        return key in self._callbacks
-
+    
+    
     def list_callbacks(self) -> List[Dict[str, Any]]:
         """List all registered callbacks.
 
@@ -166,29 +109,7 @@ class CallbackRegistry:
 
         return callbacks
 
-    def get_callbacks_for_contract(self, contract_address: str) -> List[Dict[str, Any]]:
-        """Get all callbacks for a specific contract.
-
-        Args:
-            contract_address: The contract address (should be in checksum format)
-
-        Returns:
-            List[Dict[str, Any]]: List of callbacks for the contract
-        """
-        callbacks = []
-
-        for key, callback in self._callbacks.items():
-            key_address, event_name = key.split(':', 1)
-            if key_address == contract_address:
-                callback_info = {
-                    "event_name": event_name,
-                    "callback_name": getattr(callback, '__name__', 'anonymous'),
-                    "metadata": self._callback_metadata.get(key, {})
-                }
-                callbacks.append(callback_info)
-
-        return callbacks
-
+    
     async def execute_callback(
         self,
         contract_address: str,

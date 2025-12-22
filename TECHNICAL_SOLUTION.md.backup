@@ -551,7 +551,7 @@ class RedisStorage(StorageBackend):
 **使用示例**:
 ```python
 import aioredis
-from chain_listener.storage import RedisStorage
+from chain_listener.storages.redis import RedisStorage
 
 # 用户创建和管理Redis客户端
 redis_client = aioredis.Redis.from_url("redis://localhost:6379")

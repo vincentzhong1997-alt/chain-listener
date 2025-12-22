@@ -7,7 +7,7 @@ Universal multi-chain blockchain listener SDK that provides reusable monitoring 
 Develop high-quality, well-tested blockchain monitoring solutions with exceptional reliability and performance.
 
 ## Critical Rules (Must Follow)
-1. **Test-Driven Development**: Always write tests before production code
+1. **Test-Driven Development**: Always write tests before production code. Every change must follow the full Red → Green → Refactor cycle from `tdd-workflow.md` with a failing test first, minimal implementation, then refactor, and finish by running the relevant test suite to confirm Green.
 2. **Security First**: Never expose sensitive data or create vulnerabilities
 3. **Quality Over Speed**: Understand requirements before implementation
 4. **Async-First**: All operations must be async-compatible
@@ -18,7 +18,7 @@ Develop high-quality, well-tested blockchain monitoring solutions with exception
 - **Async**: asyncio with aiohttp
 - **Config**: Pydantic for type-safe configuration
 - **Tests**: pytest with 90%+ coverage requirement
-- **Dependencies**: Managed with Poetry
+- **Dependencies**: Managed with Poetry, so run test and example_usage with poetry.
 
 ## Key Constraints
 - Always use virtual environment (poetry)

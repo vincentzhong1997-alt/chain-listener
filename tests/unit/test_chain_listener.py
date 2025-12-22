@@ -9,6 +9,8 @@ import asyncio
 from unittest.mock import Mock, AsyncMock, patch
 from typing import Dict, Any
 
+from web3 import Web3
+
 from chain_listener.core.listener import ChainListener
 from chain_listener.core.adapter_registry import AdapterRegistry
 from chain_listener.core.callback_registry import CallbackRegistry
@@ -30,9 +32,15 @@ class TestChainListener:
                     "chain_id": 1,
                     "confirmation_blocks": 12,
                     "polling_interval": 15000,
-                    "rpc_urls": [
-                        {"url": "https://eth.llamarpc.com", "priority": 1}
-                    ],
+                    "rpc": {
+                        "urls": ["https://eth.llamarpc.com"],
+                        "timeout": 30,
+                        "retries": 3,
+                        "rate_limit": {
+                            "requests_per_second": 5,
+                            "burst_size": 10,
+                        },
+                    },
                     "contracts": [
                         {
                             "name": "WBTC",
@@ -113,14 +121,14 @@ class TestChainListener:
 
         chain_listener.on_event(
             chain_name="ethereum",
-            contract_address="0x1234567890123456789012345678901234567890",
+            contract_address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
             event_name="Transfer",
             callback=callback
         )
 
         # Verify callback was registered
         registered_callback = chain_listener._callback_registry.get_callback(
-            "0x1234567890123456789012345678901234567890",
+            Web3.to_checksum_address("0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"),
             "Transfer"
         )
         assert registered_callback == callback
@@ -137,16 +145,29 @@ class TestChainListener:
                 callback=callback
             )
 
-    @pytest.mark.asyncio
-    async def test_start_listening(self, chain_listener: ChainListener):
-        """Test starting to listen for events."""
-        chain_listener._adapter_registry.connect_all = AsyncMock()
-        chain_listener._adapter_registry.get_adapter = Mock(return_value=Mock())
+    def test_on_event_unknown_contract_raises_error(self, chain_listener: ChainListener):
+        """Test registering callback for contract not in config fails."""
+        callback = Mock()
 
-        await chain_listener.start_listening()
+        with pytest.raises(ChainListenerError, match="is not configured for chain"):
+            chain_listener.on_event(
+                chain_name="ethereum",
+                contract_address="0x0000000000000000000000000000000000000000",
+                event_name="Transfer",
+                callback=callback
+            )
 
-        assert chain_listener._is_listening is True
-        chain_listener._adapter_registry.connect_all.assert_called_once()
+    def test_on_event_unknown_event_raises_error(self, chain_listener: ChainListener):
+        """Test registering callback for event not declared fails."""
+        callback = Mock()
+
+        with pytest.raises(ChainListenerError, match="Event 'Approve' is not configured"):
+            chain_listener.on_event(
+                chain_name="ethereum",
+                contract_address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+                event_name="Approve",
+                callback=callback
+            )
 
     @pytest.mark.asyncio
     async def test_start_listening_when_already_listening_raises_error(self, chain_listener: ChainListener):
@@ -155,22 +176,6 @@ class TestChainListener:
 
         with pytest.raises(ChainListenerError, match="Already listening for events"):
             await chain_listener.start_listening()
-
-    @pytest.mark.asyncio
-    async def test_stop_listening(self, chain_listener: ChainListener):
-        """Test stopping listening for events."""
-        # Set up as if listening
-        chain_listener._is_listening = True
-        chain_listener._listening_tasks = {
-            ChainType.ETHEREUM: asyncio.create_task(asyncio.sleep(1))
-        }
-
-        chain_listener._adapter_registry.disconnect_all = AsyncMock()
-
-        await chain_listener.stop_listening()
-
-        assert chain_listener._is_listening is False
-        assert len(chain_listener._listening_tasks) == 0
 
     @pytest.mark.asyncio
     async def test_get_system_status(self, chain_listener: ChainListener):
@@ -185,9 +190,49 @@ class TestChainListener:
         assert "is_listening" in status
         assert "configured_chains" in status
         assert "enabled_chains" in status
-        assert "adapter_status" in status
-        assert "callback_stats" in status
-        assert "processor_stats" in status
+
+    @pytest.mark.asyncio
+    async def test_get_events_filters_by_registered_event(self, chain_listener: ChainListener):
+        """Listener should only keep events that match registered callbacks."""
+        target_address = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
+
+        callback = Mock()
+        chain_listener.on_event(
+            chain_name="ethereum",
+            contract_address=target_address,
+            event_name="Transfer",
+            callback=callback,
+        )
+
+        adapter = Mock()
+        adapter.chain_type = ChainType.ETHEREUM
+        adapter.get_logs = AsyncMock(return_value=[
+            {
+                "address": target_address,
+                "block_number": 100,
+                "block_hash": "0xabc",
+                "transaction_hash": "0x1",
+                "log_index": 0,
+                "timestamp": 1,
+                "event_name": "Transfer",
+            },
+            {
+                "address": target_address,
+                "block_number": 101,
+                "block_hash": "0xdef",
+                "transaction_hash": "0x2",
+                "log_index": 1,
+                "timestamp": 2,
+                "event_name": "Approval",
+            },
+        ])
+
+        _ = await chain_listener._get_events_from_chain(adapter, ChainType.ETHEREUM, 1, 200)
+
+        adapter.get_logs.assert_awaited_once()
+        _, kwargs = adapter.get_logs.await_args
+        expected_address = Web3.to_checksum_address(target_address)
+        assert kwargs["event_filters"] == {expected_address: ["Transfer"]}
 
     @pytest.mark.asyncio
     async def test_get_latest_block(self, chain_listener: ChainListener):

@@ -2,10 +2,12 @@
 
 from .base import BaseAdapter
 from .ethereum import EthereumAdapter
-from .bsc import BSCAdapter
+from .solana import SolanaAdapter
+from .tron import TronAdapter
 
 __all__ = [
     "BaseAdapter",
     "EthereumAdapter",
-    "BSCAdapter",
+    "SolanaAdapter",
+    "TronAdapter",
 ]

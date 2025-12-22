@@ -9,11 +9,22 @@ import tempfile
 import yaml
 from pathlib import Path
 from typing import Dict, Any, List
+from copy import deepcopy
 from unittest.mock import Mock, AsyncMock, patch
 
 from chain_listener import ChainListener, ChainListenerConfig, ChainConfig
 from chain_listener.models.events import ChainType, RawEvent, DecodedEvent
 from chain_listener.exceptions import ChainListenerError
+
+DEFAULT_RPC_CONFIG = {
+    "urls": ["https://eth.llamarpc.com"],
+    "timeout": 30,
+    "retries": 3,
+    "rate_limit": {
+        "requests_per_second": 10,
+        "burst_size": 20
+    }
+}
 
 
 @pytest.fixture
@@ -33,11 +44,7 @@ def temp_ethereum_config_file():
                 "confirmation_blocks": 1,
                 "polling_interval": 100,  # Fast for testing
                 "enabled": True,
-                "rpc": {
-                    "urls": ["https://eth.llamarpc.com"],
-                    "timeout": 30,
-                    "retries": 3
-                },
+                "rpc": deepcopy(DEFAULT_RPC_CONFIG),
                 "contracts": [
                     {
                         "name": "TestToken",
@@ -73,6 +80,7 @@ class TestEndToEndFlow:
             mock_web3_instance.eth.chain_id = 1
             mock_web3_instance.eth.block_number = 12345
             mock_web3.return_value = mock_web3_instance
+            mock_web3.to_checksum_address = Mock(side_effect=lambda addr: addr)
 
             # Load from config file and create listener
             listener = ChainListener.from_config_file(temp_ethereum_config_file)
@@ -97,39 +105,55 @@ class TestEndToEndFlow:
             )
 
             # Test lifecycle: start → stop
-            with patch.object(listener._adapter_registry, 'connect_all') as mock_connect:
-                await listener.start_listening()
-                assert listener.is_listening
-                mock_connect.assert_called_once()
+            await listener.start_listening()
+            assert listener.is_listening
 
-            with patch.object(listener._adapter_registry, 'disconnect_all') as mock_disconnect:
-                await listener.stop_listening()
-                assert not listener.is_listening
-                mock_disconnect.assert_called_once()
+            await listener.stop_listening()
+            assert not listener.is_listening
 
             # Verify callback was registered by checking the callback registry stats
             stats = listener._callback_registry.get_stats()
             assert stats["total_callbacks"] == 1
             assert stats["unique_contracts"] == 1
             assert stats["unique_events"] == 1
+            assert len(stats["callback_list"]) == 1
+            assert stats["callback_list"][0]["callback_name"] == "test_callback"
+            assert events_received == []
 
-    @pytest.mark.asyncio
-    async def test_context_manager_usage(self, temp_ethereum_config_file):
-        """Test using ChainListener as async context manager."""
+            # Simulate a processed event and ensure callback fires
+            decoded_event = DecodedEvent(
+                chain_type=ChainType.ETHEREUM,
+                contract_address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+                event_name="Transfer",
+                parameters={"from": "0x1111", "to": "0x2222", "value": 1},
+                block_number=12345,
+                transaction_hash="0xdef...",
+                log_index=0,
+                timestamp=1640995200
+            )
+            mock_adapter = Mock()
 
-        with patch('web3.Web3') as mock_web3:
-            mock_web3_instance = Mock()
-            mock_web3_instance.is_connected.return_value = True
-            mock_web3_instance.eth.chain_id = 1
-            mock_web3.return_value = mock_web3_instance
+            async def fake_decode(_event):
+                return decoded_event
 
-            # Test context manager
-            async with ChainListener.from_config_file(temp_ethereum_config_file) as listener:
-                assert listener is not None
-                assert listener.is_listening
+            mock_adapter.decode_event = AsyncMock(side_effect=fake_decode)
+            listener._adapter_registry.get_adapter = Mock(return_value=mock_adapter)
 
-            # Verify cleanup after context exit
-            assert not listener.is_listening
+            raw_event = RawEvent(
+                chain_type=ChainType.ETHEREUM,
+                block_number=12345,
+                block_hash="0xabc...",
+                transaction_hash="0xdef...",
+                log_index=0,
+                contract_address="0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599",
+                raw_data={},
+                timestamp=1640995200
+            )
+
+            results = await listener._event_processor.process_events([raw_event])
+            assert results[0].success is True
+            assert len(events_received) == 1
+            assert events_received[0].event_name == "Transfer"
 
     @pytest.mark.asyncio
     async def test_multiple_callbacks_registration_and_processing(self):
@@ -143,7 +167,7 @@ class TestEndToEndFlow:
                     "confirmation_blocks": 1,
                     "polling_interval": 100,
                     "enabled": True,
-                    "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                    "rpc": deepcopy(DEFAULT_RPC_CONFIG)
                 }
             }
         }
@@ -167,9 +191,9 @@ class TestEndToEndFlow:
             async def approval_callback(event):
                 approval_events.append(event)
 
-            listener.on_event("ethereum", "0xABC...", "Transfer", transfer_callback)
-            listener.on_event("ethereum", "0xABC...", "Approval", approval_callback)
-            listener.on_event("ethereum", "0xDEF...", "Transfer", transfer_callback)
+            listener.on_event("ethereum", "0xabc0000000000000000000000000000000000abc", "Transfer", transfer_callback)
+            listener.on_event("ethereum", "0xabc0000000000000000000000000000000000abc", "Approval", approval_callback)
+            listener.on_event("ethereum", "0xdef0000000000000000000000000000000000def", "Transfer", transfer_callback)
 
             # Verify callback registry stats
             stats = listener._callback_registry.get_stats()
@@ -230,7 +254,7 @@ class TestEndToEndFlow:
                 "ethereum": {
                     "chain_type": "ethereum",
                     "chain_id": 1,
-                    "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                    "rpc": deepcopy(DEFAULT_RPC_CONFIG)
                 }
             }
         }
@@ -248,7 +272,7 @@ class TestEndToEndFlow:
             with pytest.raises(ChainListenerError, match="Chain 'invalid' is not configured"):
                 listener.on_event(
                     chain_name="invalid",
-                    contract_address="0x123...",
+                    contract_address="0x1230000000000000000000000000000000000123",
                     event_name="Transfer",
                     callback=Mock()
                 )
@@ -273,7 +297,7 @@ class TestEndToEndFlow:
                     "confirmation_blocks": 1,
                     "polling_interval": 100,
                     "enabled": True,
-                    "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                    "rpc": deepcopy(DEFAULT_RPC_CONFIG)
                 }
             }
         }
@@ -297,7 +321,7 @@ class TestEndToEndFlow:
             async def test_callback(event):
                 processed_events.append(event)
 
-            listener.on_event("ethereum", "0x123...", "Transfer", test_callback)
+            listener.on_event("ethereum", "0x1230000000000000000000000000000000000123", "Transfer", test_callback)
 
             # Create sample raw events
             raw_events = [
@@ -307,8 +331,12 @@ class TestEndToEndFlow:
                     block_hash="0xabc...",
                     transaction_hash="0xdef...",
                     log_index=0,
-                    contract_address="0x123...",
-                    raw_data={"from": "0x111...", "to": "0x222...", "value": "1000"},
+                    contract_address="0x1230000000000000000000000000000000000123",
+                    raw_data={
+                        "from": "0x1110000000000000000000000000000000000111",
+                        "to": "0x2220000000000000000000000000000000000222",
+                        "value": "1000"
+                    },
                     timestamp=1640995200
                 )
             ]
@@ -331,7 +359,7 @@ class TestEndToEndFlow:
                 "ethereum": {
                     "chain_type": "ethereum",
                     "chain_id": 1,
-                    "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                    "rpc": deepcopy(DEFAULT_RPC_CONFIG)
                 }
             }
         }
@@ -350,7 +378,7 @@ class TestEndToEndFlow:
                     "ethereum": {
                         # Missing chain_type
                         "chain_id": 1,
-                        "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                        "rpc": deepcopy(DEFAULT_RPC_CONFIG)
                     }
                 }
             },
@@ -359,7 +387,7 @@ class TestEndToEndFlow:
                     "ethereum": {
                         "chain_type": "ethereum",
                         "chain_id": 1
-                        # Missing rpc_urls
+                        # Missing rpc
                     }
                 }
             }

@@ -7,6 +7,7 @@ from typing import Dict, Any, List
 
 from chain_listener.core.event_processor import EventProcessor, ProcessResult, ReorgInfo
 from chain_listener.core.callback_registry import CallbackRegistry
+from chain_listener.core.state_manager import StateManager
 from chain_listener.models.events import RawEvent, DecodedEvent, ChainType
 from chain_listener.models.config import ChainListenerConfig, GlobalConfig, ChainConfig
 from chain_listener.exceptions import EventProcessingError
@@ -67,13 +68,20 @@ def mock_raw_event():
 
 
 @pytest.fixture
-def processor(mock_config, mock_callback_registry):
+def state_manager():
+    """Create a state manager with in-memory backend."""
+    return StateManager()
+
+
+@pytest.fixture
+def processor(mock_config, mock_callback_registry, state_manager):
     """Create an event processor instance for testing."""
     adapter_registry = Mock()
     processor = EventProcessor(
         mock_config,
         mock_callback_registry,
-        adapter_registry
+        adapter_registry,
+        state_manager,
     )
     # Expose mock for convenience in tests
     processor._adapter_registry = adapter_registry
@@ -275,24 +283,6 @@ class TestEventProcessor:
         assert result.event is mock_raw_event
         assert result.decoded_event is None
         assert result.callback_result is None
-
-    @pytest.mark.asyncio
-    async def test_process_single_event_no_decode_support(self, processor, mock_raw_event):
-        """Test processing event when adapter doesn't support decoding."""
-        mock_adapter = Mock()
-        # Remove decode_event attribute to mimic interface absence
-        del mock_adapter.decode_event
-        processor._adapter_registry.get_adapter.return_value = mock_adapter
-
-        processor.callback_registry.execute_callback = AsyncMock(return_value=None)
-
-        results = await processor.process_events([mock_raw_event])
-
-        assert len(results) == 1
-        result = results[0]
-        assert result.success is True
-        assert result.decoded_event.event_name == "Unknown"
-        assert result.decoded_event.parameters == {}
 
     @pytest.mark.asyncio
     async def test_process_single_event_async_decode(self, processor, mock_raw_event):

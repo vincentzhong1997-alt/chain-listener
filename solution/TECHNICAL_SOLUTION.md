@@ -89,7 +89,6 @@ class ChainListener:
     async def get_system_status(self) -> Dict[str, Any]
 
     # 链管理
-    def _add_chain_support(self, chain_name: str, config: ChainConfig) -> None
     async def get_latest_block(self, chain_name: str) -> int
 ```
 
@@ -133,8 +132,6 @@ class EventListener:
 class AdapterRegistry:
     def register_adapter(self, chain_type: ChainType, adapter_factory: Callable) -> None
     def get_adapter(self, chain_type: ChainType) -> BaseAdapter
-    def list_supported_chains(self) -> List[ChainType]
-    def remove_adapter(self, chain_type: ChainType) -> None
 ```
 
 **设计特点**:
@@ -145,14 +142,12 @@ class AdapterRegistry:
 #### 5. EventProcessor (事件处理器)
 **核心职责**:
 - 协调事件解码、回调执行和状态管理
-- 处理区块链重组检测和恢复
 - 管理事件处理的错误处理和重试机制
 
 **主要接口**:
 ```python
 class EventProcessor:
     async def process_events(self, raw_events: List[RawEvent]) -> List[ProcessResult]
-    async def _detect_reorg(self, chain_type: ChainType) -> Optional[ReorgInfo]
 ```
 
 **设计特点**:
@@ -172,17 +167,20 @@ class BaseAdapter:
     # 连接管理
     async def connect(self) -> None
     async def disconnect(self) -> None
-    async def is_connected(self) -> bool
+    def is_connected(self) -> bool
 
     # 数据获取
     async def get_latest_block_number(self) -> int
-    async def get_events(self, from_block: int, to_block: int,
-                        addresses: List[str], signatures: List[str]) -> List[RawEvent]
-    async def validate_block_hash(self, block_number: int, expected_hash: str) -> bool
+    async def get_logs(
+        self,
+        address: Optional[Union[str, List[str]]],
+        topics: Optional[List[str]],
+        from_block: Optional[Union[int, str]],
+        to_block: Optional[Union[int, str]]
+    ) -> List[RawEvent]
 
     # 事件解码
     async def decode_event(self, raw_event: RawEvent) -> DecodedEvent
-    async def load_contract_definitions(self, contracts: Dict[str, Any]) -> None
 
     # 链特定配置
     @property
@@ -190,6 +188,12 @@ class BaseAdapter:
     @property
     def config(self) -> ChainConfig
 ```
+
+**职责划分最佳实践**:
+- **BaseAdapter** 只负责跨链一致的轮询能力：RPC 连接与限流、`get_latest_block_number`、`get_logs` 等访问接口以及统一的错误处理。断点续传完全交由 `StateManager` 管理（记录最新成功区块号），并假定通过 RPC 获取的是已 final 的区块，因此无需再实现重组检测或区块哈希校验。
+- **具体链 Adapter** 则承担链特定的结构化解析：如何调用链原生 API 拉取日志、如何将原始日志转换为 `RawEvent`、如何基于该链的 ABI/IDL 将事件解码成 `DecodedEvent`。如果需要缓存 ABI、做地址/数据格式转换，都在具体适配器内部完成。
+
+`get_logs` 命名直接继承 EVM 语义（类似 `eth_getLogs`），表达“按地址 + 事件签名 + 区块范围”获取日志的含义。后续若要支持额外的过滤参数，可在方法入参上适配，而无需新增新的接口。
 
 * **RawEvent** - 原始事件数据结构
 ```python
@@ -257,21 +261,14 @@ class CallbackRegistry:
 #### 7. StateManager (状态管理器)
 **核心职责**:
 - 统一管理区块处理状态和进度跟踪
-- 提供多种存储后端的抽象接口
-- 处理重组数据的查询和回滚操作
+- 提供存储后端的抽象接口
 
 **主要接口**:
 ```python
 class StateManager:
     async def save_block_state(self, state: BlockState) -> None
     async def get_latest_block(self, chain_type: ChainType) -> Optional[int]
-    async def get_rollback_data(self, chain_type: ChainType, from_block: int) -> List[BlockState]
 ```
-
-**设计特点**:
-- 策略模式支持多种存储后端
-- 批量操作优化I/O性能
-- 原子性操作保证数据一致性
 
 ---
 
@@ -282,8 +279,6 @@ class StateManager:
 - **EventListener** → **AdapterRegister**: 从AdapterRegister拿到所有链适配器，并开始事件监听
 - **ChainListener** → **EventProcessor**: 原始事件传递和处理
 - **EventProcessor** → **StateManager**: 处理状态同步和存储
-- **EventProcessor** → **ReorgDetector**: 重组检测
-- **EventProcessor** → **CallbackRegistry**: 用户事件回调函数和重组回调函数查找和执行
 
 ##### 2. **生命周期协调**
 - **启动顺序**: StateManager → AdapterRegistry → EventProcessor → EventListener
@@ -292,7 +287,7 @@ class StateManager:
 
 ##### 3. **配置级联管理**
 - **用户配置** → ChainListener → 自动配置内部组件
-- **不支持热重载支持**: 初始化时确定日志，不支持后续变更配置
+- **不支持热重载支持**: 初始化时确定配置，不支持后续变更配置
 
 ##### 4. **错误处理协作**
 - **EventListener错误** (连接失败、超限) → ChainListener决策重试/降级
@@ -325,7 +320,7 @@ sequenceDiagram
     Coordinator->>Registry: get_adapter(chain_type)
     Registry->>Adapter: create_adapter(config)
     Coordinator->>StateMgr: get_last_processed_block()
-    Coordinator->>Adapter: get_events(from_block, to_block)
+    Coordinator->>Adapter: get_logs(from_block, to_block)
 
     loop Event Processing
         Adapter->>Processor: raw_event
@@ -345,13 +340,6 @@ sequenceDiagram
         end
     end
 
-    alt Reorg Detected
-        Processor->>StateMgr: get_rollback_data()
-        StateMgr->>Processor: rollback_states
-        Processor->>Coordinator: reorg_detected(rollback_states)
-        Coordinator->>User: reorg_handler(rollback_states)
-        User->>Coordinator: handle_reorg()
-    end
 ```
 
 ### Usage Example
@@ -416,36 +404,33 @@ await listener.start()
 - 连接断开自动重连机制
 
 **事件获取**:
-- logsSubscribe订阅程序日志
 - 按Program ID过滤事件
-- 支持历史区块事件查询
+- 根据合约地址过滤
+- 解析指令过滤出标准事件
 
 **事件解码**:
 - Anchor IDL加载和解析
-- 基于事件名称匹配解码逻辑
-- 自定义事件类型处理
 
 #### Tron适配器
 
 **连接管理**:
-- HTTP客户端连接TronGrid API
-- API调用频率限制控制
+- 完全复用 BaseAdapter 的优先级连接池与限流器，通过 `_execute_with_rate_limit` 执行 TronGrid/FullNode HTTP RPC
+- 仅轮询 final 区块数据，不再实现额外的订阅或重组检测逻辑
 
-**事件获取**:
-- gettransactioninfobyid获取交易详情
-- 按合约地址过滤日志事件
-- 分页处理大量历史数据
+**区块/事件获取（轮询）**:
+- `get_latest_block_number` 直接查询 TronGrid `wallet/getnowblock`，返回已确认区块号
+- `get_logs` 调用 `v1/contracts/{address}/events`，结合 `event_name` 与 `block_number` 范围进行过滤，自动分页聚合，兼容 BaseAdapter 统一的 `from_block`/`to_block` 语义
+- 所有监听进度由 `StateManager` 记录上一笔成功处理的区块高度，实现断点续传
 
 **事件解码**:
-- TRC-20/TRC-721标准事件解码
-- 自定义ABI事件处理
-- Tron特定数据类型转换
+- 由 TronAdapter 自行维护 ABI 缓存、事件签名映射与 Tron 特有数据格式（Base58 地址、SUN 精度值）转换
+- 将处理后的结构化数据回传给 `EventProcessor`，保持与 EVM/Solana 统一的 `DecodedEvent` 结构
 
 ### 故障转移和轮询机制
 
 #### 智能轮询策略
+- **仅轮询最终状态**: 依托 RPC 返回的已确认区块高度决定 from/to block，StateManager 记录的 last processed block 负责断点续传
 - **自适应间隔**: 根据RPC响应时间动态调整轮询频率
-- **突发处理**: 检测到新区块时立即触发事件获取
 - **速率限制**: 遵守各链的API调用限制，避免429错误
 
 #### RPC端点故障转移
@@ -455,13 +440,11 @@ await listener.start()
 ## EventProcessor Design
 
 **处理流程**:
-1. **重组检测**: 对比当前区块哈希与存储的历史哈希
+1. **日志轮询**: EventListener 按照最新区块高度调用各链适配器的 `get_logs`
 2. **事件解码**: 调用链适配器将原始事件转换为结构化数据
-3. **回调路由**: 查找并执行匹配的用户回调函数
-4. **状态更新**: 记录成功处理的区块状态
+3. **状态更新**: 记录成功处理的区块状态并触发回调路由
 
 **错误处理策略**:
-- **重组处理**: 触发用户定义的重组处理器或抛出异常
 - **解码失败**: 跳过无法解码的事件，记录错误日志继续处理
 
 ---
@@ -478,52 +461,33 @@ await listener.start()
 class BlockState:
     chain_type: ChainType
     block_number: int
-    block_hash: str          # 用于重组检测
     processed_at: int        # 处理时间戳
 ```
 
 ### 存储抽象层
 
-**StorageBackend** - 纯技术存储抽象（5个核心接口）
+**StorageBackend** - 纯技术存储抽象
 ```python
 class StorageBackend:
     # 基础存储操作
     async def save(self, key: str, value: Any) -> None
     async def get(self, key: str) -> Optional[Any]
     async def delete(self, key: str) -> None
-
-    # 批量操作（性能优化）
-    async def batch_save(self, data: Dict[str, Any]) -> None
-
-    # 查询操作
-    async def scan(self, prefix: str) -> Dict[str, Any]
 ```
 
 **StateManager** - 业务逻辑层（使用StorageBackend）
 - 封装区块链状态管理的业务逻辑
-- 实现重组检测算法和回滚策略
 - 提供业务语义的API给其他组件
 
 **核心业务功能**:
-- 区块状态管理：保存/获取区块处理状态
-- 重组检测：对比当前区块哈希与历史哈希
-- 回滚处理：获取重组数据并执行回滚操作
 - 进度跟踪：计算处理延迟和同步状态
 
 ### StorageBackend 具体实现
 
-#### Redis Storage (缓存存储）
-**适用场景**: 高性能需求、跨进程状态共享
-**特点**:
-- 内存存储，毫秒级读写性能
-- 原子性操作和事务支持
-- 支持批量操作优化I/O性能
-
+#### Redis Storage 
 **实现策略**:
 - 接收用户传入的异步Redis客户端实例
 - 使用Redis Hash存储键值对数据，提高组织效率
-- 使用Pipeline批量操作提高性能
-- 利用用户客户端的内置连接池管理
 
 **接口设计**:
 ```python
@@ -535,17 +499,12 @@ class RedisStorage(StorageBackend):
     async def get(self, key: str) -> Optional[Any]:
 
     async def delete(self, key: str) -> None:
-
-    async def batch_save(self, data: Dict[str, Any]) -> None:
-        """使用Pipeline批量保存数据"""
-
-    async def scan(self, prefix: str) -> Dict[str, Any]:
 ```
 
 **使用示例**:
 ```python
 import aioredis
-from chain_listener.storage import RedisStorage
+from chain_listener.storages.redis import RedisStorage
 
 # 用户创建和管理Redis客户端
 redis_client = aioredis.Redis.from_url("redis://localhost:6379")
@@ -554,13 +513,7 @@ redis_client = aioredis.Redis.from_url("redis://localhost:6379")
 storage = RedisStorage(redis_client, key_prefix="my_app:")
 
 # ChainListener使用存储
-config = ChainListenerConfig(
-    storage=StorageConfig(
-        backend="redis",
-        redis_client=redis_client,  # 传入客户端实例
-        key_prefix="chain_listener:"
-    )
-)
+listener.use_storage(redis_client)
 ```
 
 ---
@@ -619,25 +572,7 @@ chains:
         idl: "..."  # Solana合约IDL JSON字符串
         events: ["Transfer", "Mint", "Burn"]
 
-  tron:
-    enabled: true
-    chain_type: "tron"
-    confirmation_blocks: 19
-    polling_interval: 2000
-    rpc_urls:
-      - url: "https://api.trongrid.io"
-        priority: 1
-    contracts:
-      - name: "TRC20USDT"
-        address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
-        abi: "..."  # TRC-20 ABI JSON字符串
-        events: ["Transfer"]
 ```
-
-**Reorg Configuration** - 重组处理配置
-- `max_rollback_depth`: 最大回滚深度 (默认: 1000)
-- `auto_rollback_enabled`: 是否自动回滚 (默认: true)
-- `reorg_detection_interval`: 重组检测间隔 (默认: 30000ms)
 
 #### 配置模型设计
 
@@ -676,7 +611,7 @@ class ChainListenerConfig(BaseModel):
 
 ---
 
-## Error Handling & Reorg Protection
+## Error Handling
 
 ### Enhanced Error Handling Strategy
 
@@ -691,10 +626,6 @@ class EventProcessingError(ChainListenerError):
 
 class EventDecodingError(ChainListenerError):
     """事件解码失败"""
-    pass
-
-class ReorgError(ChainListenerError):
-    """链重组异常"""
     pass
 
 class ConnectionError(ChainListenerError):
@@ -750,47 +681,9 @@ class ErrorHandler:
             return "connection"
         elif isinstance(error, DecodingError):
             return "decoding"
-        elif isinstance(error, ReorgError):
-            return "reorg"
         else:
             return "unknown"
 ```
-
-### Reorg Detection and Handling
-
-```python
-class ReorgDetector:
-    """重组检测器"""
-
-    def __init__(self, state_manager: StateManager):
-        self.state_manager = state_manager
-        self.confirmed_blocks: Dict[ChainType, int] = {}
-
-    async def verify_block(
-        self, adapter: BaseAdapter, block_number: int, block_hash: str
-    ) -> bool:
-        """验证区块哈希"""
-        return await adapter.validate_block_hash(block_number, block_hash)
-
-    async def detect_reorg_chain(
-        self, chain_type: ChainType, adapter: BaseAdapter
-    ) -> Optional[int]:
-        """检测重组点，返回需要回滚到的区块高度"""
-        latest_block = await adapter.get_latest_block_number()
-        confirmation_blocks = adapter.config.confirmation_blocks
-
-        # 从最新区块开始检查
-        for i in range(latest_block, max(0, latest_block - confirmation_blocks * 2), -1):
-            stored_hash = await self.state_manager.get_block_hash(chain_type, i)
-            if stored_hash:
-                is_valid = await adapter.validate_block_hash(i, stored_hash)
-                if not is_valid:
-                    return i
-
-        return None
-```
-
----
 
 ## Implementation Plan
 
@@ -875,7 +768,6 @@ class ReorgDetector:
         * Redis 基础实现
     2.  **StateManager 业务层**
         * 区块状态管理
-        * 基础重组检测
     3.  **配置管理系统**
         * Pydantic 配置模型
         * YAML 文件加载
@@ -925,10 +817,7 @@ class ReorgDetector:
     1.  **多链配置管理**
         * 链特定配置
         * 批量配置加载
-    2.  **完整重组处理**
-        * 自动检测算法
-        * 数据回滚机制
-    3.  **性能监控**
+    2.  **性能监控**
         * 多链指标面板
         * 处理延迟统计
 

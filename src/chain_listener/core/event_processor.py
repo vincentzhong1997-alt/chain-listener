@@ -12,6 +12,7 @@ from ..models.events import RawEvent, DecodedEvent, ChainType
 from ..models.config import ChainListenerConfig
 from ..exceptions import EventProcessingError
 from .callback_registry import CallbackRegistry
+from .state_manager import StateManager
 
 if TYPE_CHECKING:
     from .adapter_registry import AdapterRegistry
@@ -50,7 +51,8 @@ class EventProcessor:
         self,
         config: ChainListenerConfig,
         callback_registry: CallbackRegistry,
-        adapter_registry: 'AdapterRegistry'
+        adapter_registry: 'AdapterRegistry',
+        state_manager: StateManager,
     ) -> None:
         """Initialize the event processor.
 
@@ -61,6 +63,7 @@ class EventProcessor:
         self.config = config
         self.callback_registry = callback_registry
         self._adapter_registry = adapter_registry
+        self._state_manager = state_manager
         self._processed_events: Dict[str, int] = {}  # Cache for deduplication
         self._reorg_detection: Dict[ChainType, Dict[int, str]] = {}  # Block hash cache
 
@@ -125,24 +128,10 @@ class EventProcessor:
             # Get adapter for decoding
             adapter = self._adapter_registry.get_adapter(event.chain_type)
 
-            # Decode the event
-            if hasattr(adapter, 'decode_event'):
-                if asyncio.iscoroutinefunction(adapter.decode_event):
-                    decoded_event = await adapter.decode_event(event)
-                else:
-                    decoded_event = adapter.decode_event(event)
-            else:
-                # Create basic decoded event if adapter doesn't support decoding
-                decoded_event = DecodedEvent(
-                    chain_type=event.chain_type,
-                    contract_address=event.contract_address,
-                    event_name="Unknown",  # Will be filled by adapter if available
-                    parameters={},
-                    block_number=event.block_number,
-                    transaction_hash=event.transaction_hash,
-                    log_index=event.log_index,
-                    timestamp=event.timestamp
-                )
+            # Decode the event via adapter-specific implementation
+            decoded_event = adapter.decode_event(event)
+            if asyncio.iscoroutine(decoded_event):
+                decoded_event = await decoded_event
 
             # Execute callback if registered
             callback_result = None
@@ -161,6 +150,17 @@ class EventProcessor:
 
             # Mark event as processed
             self._processed_events[event_hash] = event.timestamp
+
+            # Persist chain progress for recovery
+            try:
+                await self._state_manager.record_block_state(
+                    chain_type=event.chain_type,
+                    block_number=event.block_number,
+                    block_hash=event.block_hash,
+                    processed_at=event.timestamp or None,
+                )
+            except Exception as state_error:
+                logger.warning(f"Failed to persist block state: {state_error}")
 
             # Cleanup old events from cache (prevent memory leak)
             await self._cleanup_old_events()
