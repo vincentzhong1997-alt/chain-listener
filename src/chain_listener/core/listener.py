@@ -6,12 +6,13 @@ primary API for the blockchain listener SDK.
 
 import asyncio
 import logging
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable, List, Type
 from pathlib import Path
 
 from ..models.config import ChainListenerConfig, ChainConfig
 from ..models.events import ChainType, RawEvent
 from ..exceptions import ChainListenerError, BlockchainAdapterError
+from ..adapters.base import BaseAdapter
 from .adapter_registry import AdapterRegistry, adapter_registry
 from .callback_registry import CallbackRegistry
 from .event_processor import EventProcessor
@@ -106,7 +107,6 @@ class ChainListener:
                     adapter_config = self._build_adapter_config(chain_config)
                     self._adapter_registry.register_adapter(
                         chain_type,
-                        self._get_adapter_factory(chain_type),
                         adapter_config
                     )
                     logger.info(f"Initialized adapter for {chain_name} ({chain_type})")
@@ -117,30 +117,6 @@ class ChainListener:
 
         except Exception as e:
             raise ChainListenerError(f"Failed to initialize adapters: {e}")
-
-    def _get_adapter_factory(self, chain_type: ChainType) -> Callable:
-        """Get the adapter factory for a chain type.
-
-        Args:
-            chain_type: The blockchain type
-
-        Returns:
-            Callable: Adapter factory function
-
-        Raises:
-            ChainListenerError: If chain type is not supported
-        """
-        # Factories are registered during initialization
-        # This method returns the appropriate factory based on chain type
-        if chain_type == ChainType.ETHEREUM:
-            from ..adapters.ethereum import EthereumAdapter
-            return lambda config: EthereumAdapter(config)
-        # Note: BSC support removed until BSC adapter is fully implemented
-        # elif chain_type == ChainType.BSC:
-        #     from ..adapters.bsc import BSCAdapter
-        #     return lambda config: BSCAdapter(config)
-        else:
-            raise ChainListenerError(f"Unsupported chain type: {chain_type}")
 
     def _build_adapter_config(self, chain_config: ChainConfig) -> Dict[str, Any]:
         """Build adapter configuration from chain configuration.
@@ -250,9 +226,6 @@ class ChainListener:
             raise ChainListenerError("Already listening for events")
 
         try:
-            # Connect all adapters
-            await self._adapter_registry.connect_all()
-
             # Start listening tasks for each chain
             for chain_name, chain_config in self.config.get_enabled_chains().items():
                 if chain_config.enabled:
@@ -283,9 +256,6 @@ class ChainListener:
         try:
             # Cancel all listening tasks
             await self._cleanup_listening_tasks()
-
-            # Disconnect all adapters
-            await self._adapter_registry.disconnect_all()
 
             # Tasks will be marked as done when cancelled, no need to set flag
             logger.info("ChainListener stopped successfully")
@@ -365,7 +335,7 @@ class ChainListener:
         except Exception as e:
             logger.error(f"Fatal error listening to {chain_name}: {e}")
 
-    async def _get_latest_block(self, adapter) -> int:
+    async def _get_latest_block(self, adapter: BaseAdapter) -> int:
         """Get the latest block number from an adapter.
 
         Args:
@@ -407,34 +377,27 @@ class ChainListener:
 
         if contract_addresses:
             # Get logs for watched contracts
-            if hasattr(adapter, 'get_logs'):
-                # Determine address parameter format
-                if len(contract_addresses) == 0:
-                    address_param = None
-                elif len(contract_addresses) == 1:
-                    address_param = contract_addresses.pop()
-                else:
-                    address_param = list(contract_addresses)
+            # All adapters must implement get_logs as it's an abstract method in BaseAdapter
+            # Determine address parameter format
+            if len(contract_addresses) == 0:
+                address_param = None
+            elif len(contract_addresses) == 1:
+                address_param = contract_addresses.pop()
+            else:
+                address_param = list(contract_addresses)
 
-                # Get logs with proper address format
-                if asyncio.iscoroutinefunction(adapter.get_logs):
-                    logs = await adapter.get_logs(
-                        from_block=from_block,
-                        to_block=to_block,
-                        address=address_param
-                    )
-                else:
-                    logs = adapter.get_logs(
-                        from_block=from_block,
-                        to_block=to_block,
-                        address=address_param
-                    )
+            # Get logs with proper address format
+            logs = await adapter.get_logs(
+                from_block=from_block,
+                to_block=to_block,
+                address=address_param
+            )
 
-                # Convert logs to RawEvent objects
-                for log in logs:
+            # Convert logs to RawEvent objects
+            for log in logs:
                     # This is simplified - in production, convert adapter-specific logs to RawEvent
                     event = RawEvent(
-                        chain_type=adapter.chain_type if hasattr(adapter, 'chain_type') else ChainType.ETHEREUM,
+                        chain_type=adapter.chain_type,
                         block_number=log.get('block_number', from_block),
                         block_hash=log.get('block_hash', ''),
                         transaction_hash=log.get('transaction_hash', ''),
@@ -516,45 +479,11 @@ class ChainListener:
             for task in self._listening_tasks.values()
         )
 
-    def _add_chain_support(self, chain_name: str, config: ChainConfig) -> None:
-        """Add support for a new blockchain (internal method).
-
-        Args:
-            chain_name: The name of the blockchain
-            config: The chain configuration
-
-        Raises:
-            ChainListenerError: If already listening or chain already exists
-        """
-        if self.is_listening:
-            raise ChainListenerError("Cannot add chain while listening")
-
-        if chain_name in self.config.chains:
-            raise ChainListenerError(f"Chain '{chain_name}' already exists")
-
-        # Add to configuration
-        self.config.chains[chain_name] = config
-
-        # Initialize adapter
-        try:
-            chain_type = ChainType(config.chain_type)
-            adapter_config = self._build_adapter_config(config)
-            self._adapter_registry.register_adapter(
-                chain_type,
-                self._get_adapter_factory(chain_type),
-                adapter_config
-            )
-            logger.info(f"Added support for {chain_name}")
-        except Exception as e:
-            # Rollback configuration change
-            del self.config.chains[chain_name]
-            raise ChainListenerError(f"Failed to add chain '{chain_name}': {e}")
-
     async def __aenter__(self) -> 'ChainListener':
         """Async context manager entry."""
         await self.start_listening()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(self, _exc_type, _exc_val, _exc_tb) -> None:
         """Async context manager exit."""
         await self.stop_listening()

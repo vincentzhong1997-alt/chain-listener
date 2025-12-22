@@ -6,12 +6,15 @@ including event decoding, callback execution, and state management.
 
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional, NamedTuple
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
 from ..models.events import RawEvent, DecodedEvent, ChainType
 from ..models.config import ChainListenerConfig
 from ..exceptions import EventProcessingError
 from .callback_registry import CallbackRegistry
+
+if TYPE_CHECKING:
+    from .adapter_registry import AdapterRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,8 @@ class EventProcessor:
     def __init__(
         self,
         config: ChainListenerConfig,
-        callback_registry: CallbackRegistry
+        callback_registry: CallbackRegistry,
+        adapter_registry: 'AdapterRegistry'
     ) -> None:
         """Initialize the event processor.
 
@@ -56,6 +60,7 @@ class EventProcessor:
         """
         self.config = config
         self.callback_registry = callback_registry
+        self._adapter_registry = adapter_registry
         self._processed_events: Dict[str, int] = {}  # Cache for deduplication
         self._reorg_detection: Dict[ChainType, Dict[int, str]] = {}  # Block hash cache
 
@@ -118,8 +123,7 @@ class EventProcessor:
                 return ProcessResult(success=True, event=event)
 
             # Get adapter for decoding
-            from .adapter_registry import adapter_registry
-            adapter = adapter_registry.get_adapter(event.chain_type)
+            adapter = self._adapter_registry.get_adapter(event.chain_type)
 
             # Decode the event
             if hasattr(adapter, 'decode_event'):
@@ -216,8 +220,7 @@ class EventProcessor:
             Optional[ReorgInfo]: Information about the reorg, or None if none detected
         """
         try:
-            from .adapter_registry import adapter_registry
-            adapter = adapter_registry.get_adapter(chain_type)
+            adapter = self._adapter_registry.get_adapter(chain_type)
 
             if not hasattr(adapter, 'get_latest_block_number'):
                 return None

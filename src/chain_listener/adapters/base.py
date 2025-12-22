@@ -13,8 +13,6 @@ import logging
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Callable, AsyncGenerator, Union
-from collections import deque
-import random
 
 from chain_listener.exceptions import (
     BlockchainAdapterError,
@@ -23,7 +21,6 @@ from chain_listener.exceptions import (
     SubscriptionError,
     BlockNotFoundError,
     TransactionError,
-    HealthCheckError,
     RetryExhaustedError
 )
 
@@ -226,6 +223,8 @@ class BaseAdapter(ABC):
         self.name = config["name"]
         self.network = config.get("network", "mainnet")
         self.rpc_config = config["rpc"]
+        # Chain type is optional but set when building adapter configs
+        self.chain_type = config.get("chain_type")
 
         # Connection management - use PriorityConnectionPool with URL ordering as priority
         urls = self.rpc_config["urls"]
@@ -233,8 +232,6 @@ class BaseAdapter(ABC):
             endpoints=urls,
             max_retries=self.rpc_config.get("retries", 3)
         )
-
-        self._connection_lock = asyncio.Lock()
 
         # Rate limiting using async-limiter
         from async_limiter import DualRateLimiter
@@ -255,11 +252,6 @@ class BaseAdapter(ABC):
         # Subscription management
         self._subscriptions: Dict[str, Dict[str, Any]] = {}
         self._subscription_id_counter = 0
-
-        # Request tracking for debugging
-        self._request_count = 0
-        self._error_count = 0
-        self._last_request_time = None
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
         """Validate adapter configuration.
@@ -329,30 +321,7 @@ class BaseAdapter(ABC):
         """Disconnect from blockchain network."""
         pass
 
-    async def connect_with_retry(self) -> None:
-        """Connect with automatic retry logic.
-
-        Raises:
-            ConnectionError: If connection fails after all retries
-        """
-        last_error = None
-        max_retries = self.rpc_config.get("retries", 3)
-
-        for attempt in range(max_retries + 1):
-            try:
-                await self.connect()
-                return
-            except (ChainConnectionError, asyncio.TimeoutError) as e:
-                last_error = e
-                if attempt < max_retries:
-                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
-
-        raise RetryExhaustedError(
-            f"Failed to connect after {max_retries + 1} attempts",
-            max_retries=max_retries,
-            last_error=last_error
-        )
-
+    
     @abstractmethod
     async def get_latest_block_number(self) -> int:
         """Get the latest block number.
@@ -471,20 +440,7 @@ class BaseAdapter(ABC):
         # Default implementation - subclasses should override for real subscriptions
         return subscription_id
 
-    async def unsubscribe_from_events(self, subscription_id: str) -> None:
-        """Unsubscribe from events.
-
-        Args:
-            subscription_id: Subscription ID to cancel
-
-        Raises:
-            SubscriptionError: If unsubscription fails
-        """
-        if subscription_id in self._subscriptions:
-            self._subscriptions[subscription_id]["active"] = False
-        else:
-            raise SubscriptionError(f"Subscription not found: {subscription_id}")
-
+    
     def get_metadata(self) -> Dict[str, Any]:
         """Get adapter metadata and capabilities.
 
@@ -519,8 +475,6 @@ class BaseAdapter(ABC):
         Raises:
             BlockchainAdapterError: Converted SDK exception
         """
-        self._error_count += 1
-
         if isinstance(error, BlockchainAdapterError):
             raise error
 
@@ -567,8 +521,6 @@ class BaseAdapter(ABC):
         """
         # Use async-limiter context manager for rate limiting
         async with self._rate_limiter:
-            self._request_count += 1
-            self._last_request_time = datetime.now(timezone.utc)
 
             try:
                 # Check if operation is async
@@ -579,27 +531,6 @@ class BaseAdapter(ABC):
                 return result
             except Exception as e:
                 self._handle_blockchain_error(e)
-
-    async def _initialize_connection_pool(self) -> None:
-        """Initialize connection pool with health checks.
-
-        Tests each connection to determine availability.
-        """
-        # Default implementation - PriorityConnectionPool handles health automatically
-        pass
-
-    def _get_next_connection(self) -> str:
-        """Get next available RPC connection.
-
-        Returns:
-            RPC endpoint URL
-        """
-        return self._connection_pool.get_next_connection()
-
-    def _record_request(self) -> None:
-        """Record a request for rate limiting."""
-        self._request_count += 1
-        self._last_request_time = datetime.now(timezone.utc)
 
     
     @abstractmethod
@@ -618,42 +549,4 @@ class BaseAdapter(ABC):
         """
         pass
 
-    async def get_events_stream(
-        self,
-        address: Optional[str] = None,
-        topics: Optional[List[str]] = None,
-        from_block: Optional[int] = None
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Stream events in real-time.
-
-        Args:
-            address: Contract address to filter by
-            topics: Event topics to filter by
-            from_block: Starting block number
-
-        Yields:
-            Event dictionaries as they occur
-
-        Raises:
-            BlockchainAdapterError: If streaming fails
-        """
-        # Default implementation - poll for new blocks and get logs
-        current_block = from_block or await self.get_latest_block_number()
-
-        while True:
-            try:
-                latest_block = await self.get_latest_block_number()
-                if latest_block > current_block:
-                    logs = await self.get_logs(
-                        address=address,
-                        topics=topics,
-                        from_block=current_block + 1,
-                        to_block=latest_block
-                    )
-                    for log in logs:
-                        yield log
-                    current_block = latest_block
-
-                await asyncio.sleep(1)  # Poll every second
-            except Exception as e:
-                self._handle_blockchain_error(e)
+    

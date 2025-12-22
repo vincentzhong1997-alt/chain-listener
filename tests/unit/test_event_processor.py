@@ -22,7 +22,12 @@ def mock_config():
                 chain_id=1,
                 confirmation_blocks=12,
                 polling_interval=15000,
-                rpc_urls=[{"url": "https://eth.llamarpc.com", "priority": 1}]
+                rpc={
+                    "urls": ["https://eth.llamarpc.com"],
+                    "timeout": 30,
+                    "retries": 3
+                },
+                contracts=[]
             )
         },
         global_config=GlobalConfig(
@@ -64,7 +69,15 @@ def mock_raw_event():
 @pytest.fixture
 def processor(mock_config, mock_callback_registry):
     """Create an event processor instance for testing."""
-    return EventProcessor(mock_config, mock_callback_registry)
+    adapter_registry = Mock()
+    processor = EventProcessor(
+        mock_config,
+        mock_callback_registry,
+        adapter_registry
+    )
+    # Expose mock for convenience in tests
+    processor._adapter_registry = adapter_registry
+    return processor
 
 
 class TestProcessResult:
@@ -231,14 +244,13 @@ class TestEventProcessor:
             timestamp=mock_raw_event.timestamp
         )
 
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.decode_event.return_value = mock_decoded_event
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.decode_event.return_value = mock_decoded_event
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            processor.callback_registry.execute_callback = AsyncMock(return_value="callback_result")
+        processor.callback_registry.execute_callback = AsyncMock(return_value="callback_result")
 
-            results = await processor.process_events([mock_raw_event])
+        results = await processor.process_events([mock_raw_event])
 
         assert len(results) == 1
         result = results[0]
@@ -267,15 +279,14 @@ class TestEventProcessor:
     @pytest.mark.asyncio
     async def test_process_single_event_no_decode_support(self, processor, mock_raw_event):
         """Test processing event when adapter doesn't support decoding."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            # Remove decode_event attribute
-            del mock_adapter.decode_event
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        # Remove decode_event attribute to mimic interface absence
+        del mock_adapter.decode_event
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            processor.callback_registry.execute_callback = AsyncMock(return_value=None)
+        processor.callback_registry.execute_callback = AsyncMock(return_value=None)
 
-            results = await processor.process_events([mock_raw_event])
+        results = await processor.process_events([mock_raw_event])
 
         assert len(results) == 1
         result = results[0]
@@ -288,14 +299,13 @@ class TestEventProcessor:
         """Test processing event with async decode method."""
         mock_decoded_event = Mock()
 
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.decode_event = AsyncMock(return_value=mock_decoded_event)
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.decode_event = AsyncMock(return_value=mock_decoded_event)
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            processor.callback_registry.execute_callback = AsyncMock(return_value=None)
+        processor.callback_registry.execute_callback = AsyncMock(return_value=None)
 
-            results = await processor.process_events([mock_raw_event])
+        results = await processor.process_events([mock_raw_event])
 
         assert len(results) == 1
         assert results[0].success is True
@@ -307,16 +317,15 @@ class TestEventProcessor:
         mock_decoded_event = Mock()
         mock_decoded_event.event_name = "Transfer"
 
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.decode_event.return_value = mock_decoded_event
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.decode_event.return_value = mock_decoded_event
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            processor.callback_registry.execute_callback = AsyncMock(
-                side_effect=Exception("Callback failed")
-            )
+        processor.callback_registry.execute_callback = AsyncMock(
+            side_effect=Exception("Callback failed")
+        )
 
-            results = await processor.process_events([mock_raw_event])
+        results = await processor.process_events([mock_raw_event])
 
         # Should still succeed despite callback error
         assert len(results) == 1
@@ -327,10 +336,9 @@ class TestEventProcessor:
     @pytest.mark.asyncio
     async def test_process_single_event_processing_error(self, processor, mock_raw_event):
         """Test processing event when processing fails."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_registry.get_adapter.side_effect = Exception("Adapter error")
+        processor._adapter_registry.get_adapter.side_effect = Exception("Adapter error")
 
-            results = await processor.process_events([mock_raw_event])
+        results = await processor.process_events([mock_raw_event])
 
         assert len(results) == 1
         result = results[0]
@@ -356,24 +364,23 @@ class TestEventProcessor:
             )
             events.append(event)
 
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.decode_event.return_value = Mock()
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.decode_event.return_value = Mock()
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            processor.callback_registry.execute_callback = AsyncMock(return_value=None)
+        processor.callback_registry.execute_callback = AsyncMock(return_value=None)
 
-            # Mock asyncio.sleep to simulate concurrent processing
-            original_sleep = asyncio.sleep
-            sleep_calls = []
+        # Mock asyncio.sleep to simulate concurrent processing
+        original_sleep = asyncio.sleep
+        sleep_calls = []
 
-            async def mock_sleep(delay):
-                sleep_calls.append(delay)
-                if delay > 0:  # Only track actual sleep calls, not semaphore timeouts
-                    await original_sleep(0.001)  # Small delay for test timing
+        async def mock_sleep(delay):
+            sleep_calls.append(delay)
+            if delay > 0:  # Only track actual sleep calls, not semaphore timeouts
+                await original_sleep(0.001)  # Small delay for test timing
 
-            with patch('asyncio.sleep', side_effect=mock_sleep):
-                results = await processor.process_events(events)
+        with patch('asyncio.sleep', side_effect=mock_sleep):
+            results = await processor.process_events(events)
 
         assert len(results) == 3
         assert all(result.success for result in results)
@@ -381,10 +388,9 @@ class TestEventProcessor:
     @pytest.mark.asyncio
     async def test_process_events_exception_handling(self, processor, mock_raw_event):
         """Test handling exceptions during event processing."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_registry.get_adapter.side_effect = Exception("Critical error")
+        processor._adapter_registry.get_adapter.side_effect = Exception("Critical error")
 
-            results = await processor.process_events([mock_raw_event])
+        results = await processor.process_events([mock_raw_event])
 
         assert len(results) == 1
         result = results[0]
@@ -424,26 +430,24 @@ class TestEventProcessor:
     @pytest.mark.asyncio
     async def test_detect_reorg_no_support(self, processor):
         """Test reorg detection when adapter doesn't support it."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            # Remove get_latest_block_number attribute
-            del mock_adapter.get_latest_block_number
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        # Remove get_latest_block_number attribute
+        del mock_adapter.get_latest_block_number
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            result = await processor.detect_reorg(ChainType.ETHEREUM)
+        result = await processor.detect_reorg(ChainType.ETHEREUM)
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_detect_reorg_initialization(self, processor):
         """Test reorg detection initialization."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.get_latest_block_number.return_value = 12345
-            mock_adapter.get_block_by_number.return_value = {"hash": "0x1234567890"}
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.get_latest_block_number.return_value = 12345
+        mock_adapter.get_block_by_number.return_value = {"hash": "0x1234567890"}
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            result = await processor.detect_reorg(ChainType.ETHEREUM)
+        result = await processor.detect_reorg(ChainType.ETHEREUM)
 
         assert result is None
         assert ChainType.ETHEREUM in processor._reorg_detection
@@ -456,13 +460,12 @@ class TestEventProcessor:
         # Initialize cache with different hash
         processor._reorg_detection[ChainType.ETHEREUM] = {12345: "0xoldhash"}
 
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.get_latest_block_number.return_value = 12345
-            mock_adapter.get_block_by_number.return_value = {"hash": "0xnewhash"}
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.get_latest_block_number.return_value = 12345
+        mock_adapter.get_block_by_number.return_value = {"hash": "0xnewhash"}
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            result = await processor.detect_reorg(ChainType.ETHEREUM)
+        result = await processor.detect_reorg(ChainType.ETHEREUM)
 
         assert result is not None
         assert isinstance(result, ReorgInfo)
@@ -474,13 +477,12 @@ class TestEventProcessor:
     @pytest.mark.asyncio
     async def test_detect_reorg_async_methods(self, processor):
         """Test reorg detection with async adapter methods."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.get_latest_block_number = AsyncMock(return_value=12345)
-            mock_adapter.get_block_by_number = AsyncMock(return_value={"hash": "0x1234567890"})
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.get_latest_block_number = AsyncMock(return_value=12345)
+        mock_adapter.get_block_by_number = AsyncMock(return_value={"hash": "0x1234567890"})
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            result = await processor.detect_reorg(ChainType.ETHEREUM)
+        result = await processor.detect_reorg(ChainType.ETHEREUM)
 
         assert result is None
         mock_adapter.get_latest_block_number.assert_awaited_once()
@@ -489,23 +491,21 @@ class TestEventProcessor:
     @pytest.mark.asyncio
     async def test_detect_reorg_error_handling(self, processor):
         """Test error handling in reorg detection."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_registry.get_adapter.side_effect = Exception("Adapter error")
+        processor._adapter_registry.get_adapter.side_effect = Exception("Adapter error")
 
-            result = await processor.detect_reorg(ChainType.ETHEREUM)
+        result = await processor.detect_reorg(ChainType.ETHEREUM)
 
         assert result is None
 
     @pytest.mark.asyncio
     async def test_detect_reorg_no_block_hash(self, processor):
         """Test reorg detection when block hash is not available."""
-        with patch('chain_listener.core.adapter_registry.adapter_registry') as mock_registry:
-            mock_adapter = Mock()
-            mock_adapter.get_latest_block_number.return_value = 12345
-            mock_adapter.get_block_by_number.return_value = None  # No block data
-            mock_registry.get_adapter.return_value = mock_adapter
+        mock_adapter = Mock()
+        mock_adapter.get_latest_block_number.return_value = 12345
+        mock_adapter.get_block_by_number.return_value = None  # No block data
+        processor._adapter_registry.get_adapter.return_value = mock_adapter
 
-            result = await processor.detect_reorg(ChainType.ETHEREUM)
+        result = await processor.detect_reorg(ChainType.ETHEREUM)
 
         assert result is None
 
