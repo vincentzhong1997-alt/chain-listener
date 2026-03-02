@@ -267,7 +267,7 @@ class TestBaseBlockchainAdapter:
         }
 
         adapter = MockBlockchainAdapter(config)
-        await adapter.connect()
+        
 
         block_number = await adapter.get_latest_block_number()
 
@@ -299,7 +299,7 @@ class TestBaseBlockchainAdapter:
         }
 
         adapter = MockBlockchainAdapter(config)
-        await adapter.connect()
+        
 
         block = await adapter.get_block_by_number(18500000)
 
@@ -333,7 +333,7 @@ class TestBaseBlockchainAdapter:
         }
 
         adapter = MockBlockchainAdapter(config)
-        await adapter.connect()
+        
 
         contract_address = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599"
         logs = await adapter.get_logs(address=contract_address, from_block=18500000, to_block=18500010)
@@ -367,7 +367,7 @@ class TestBaseBlockchainAdapter:
         }
 
         adapter = MockBlockchainAdapter(config)
-        await adapter.connect()
+        
 
         tx_hash = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
         transaction = await adapter.get_transaction(tx_hash)
@@ -424,7 +424,7 @@ class TestBaseBlockchainAdapter:
         }
 
         adapter = MockBlockchainAdapter(config)
-        await adapter.connect()
+        
 
         # Concurrent block number requests
         tasks = [adapter.get_latest_block_number() for _ in range(10)]

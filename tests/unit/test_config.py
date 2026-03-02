@@ -183,9 +183,7 @@ def test_main_config_creation():
                 "chain_id": 1,
                 "confirmation_blocks": 12,
                 "polling_interval": 15000,
-                "rpc_urls": [
-                    {"url": "https://eth.llamarpc.com", "priority": 1}
-                ],
+                "rpc": {"endpoints": [{"url": "https://eth.llamarpc.com"}]},
                 "contracts": [
                     {
                         "name": "WBTC",
@@ -262,13 +260,13 @@ def test_config_validation_edge_cases():
     # Invalid blockchain names should raise error
     with pytest.raises(ValidationError):
         ChainListenerConfig(blockchains={
-            "": {"enabled": True, "rpc": {"urls": ["https://eth.llamarpc.com"]}}
+            "": {"enabled": True, "rpc": {"endpoints": [{"url": "https://eth.llamarpc.com"}]}}
         })
 
     # Invalid deduplication strategy should raise error
     with pytest.raises(ValidationError):
         ChainListenerConfig(
-            blockchains={"ethereum": {"enabled": True, "rpc": {"urls": ["https://eth.llamarpc.com"]}}},
+            blockchains={"ethereum": {"enabled": True, "rpc": {"endpoints": [{"url": "https://eth.llamarpc.com"}]}}},
             event_processing={"deduplication": {"strategy": "invalid_strategy"}}
         )
 
@@ -282,7 +280,7 @@ def test_valid_chain_types(chain_type: str):
 
     config = ChainConfig(
         chain_type=chain_type,
-        rpc_urls=[{"url": "https://example.com", "priority": 1}]
+        rpc={"endpoints": [{"url": "https://example.com"}]}
     )
     assert config.chain_type == chain_type
 
@@ -295,7 +293,7 @@ def test_invalid_chain_types(chain_type: str):
     # Chain type is a string field, so it accepts any string
     config = ChainConfig(
         chain_type=chain_type,
-        rpc_urls=[{"url": "https://example.com", "priority": 1}]
+        rpc={"endpoints": [{"url": "https://example.com"}]}
     )
     assert config.chain_type == chain_type
 

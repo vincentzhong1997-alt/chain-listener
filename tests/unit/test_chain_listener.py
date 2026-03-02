@@ -84,7 +84,7 @@ class TestChainListener:
             "chains": {
                 "ethereum": {
                     "chain_type": "ethereum",
-                    "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                    "rpc": {"endpoints": [{"url": "https://eth.llamarpc.com"}]}
                 }
             }
         }
@@ -270,7 +270,7 @@ class TestChainListener:
         new_chain_config = ChainConfig(
             chain_type="bsc",
             chain_id=56,
-            rpc_urls=[{"url": "https://rpc.ankr.com/bsc", "priority": 1}]
+            rpc={"endpoints": [{"url": "https://rpc.ankr.com/bsc"}]}
         )
 
         with patch('chain_listener.core.listener.ChainType') as mock_chain_type, \
@@ -291,7 +291,7 @@ class TestChainListener:
 
         new_chain_config = ChainConfig(
             chain_type="ethereum",
-            rpc_urls=[{"url": "https://ethereum-dataseed.binance.org", "priority": 1}]
+            rpc={"endpoints": [{"url": "https://ethereum-dataseed.binance.org"}]}
         )
 
         with pytest.raises(ChainListenerError, match="Cannot add chain while listening"):
@@ -319,9 +319,9 @@ class TestChainListenerIntegration:
                     "chain_id": 1,
                     "confirmation_blocks": 1,
                     "polling_interval": 1000,
-                    "rpc_urls": [
-                        {"url": "https://eth.llamarpc.com", "priority": 1}
-                    ]
+                    "rpc": {
+                        "endpoints": [{"url": "https://eth.llamarpc.com"}]
+                    }
                 }
             },
             "global_config": {

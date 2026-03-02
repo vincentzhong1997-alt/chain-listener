@@ -33,9 +33,15 @@ class RPCConfig(BaseModel):
     """RPC endpoint configuration."""
     model_config = ConfigDict(validate_assignment=True)
 
-    urls: List[str] = Field(..., min_length=1, description="RPC endpoint URLs")
+    endpoints: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Endpoint definitions with url/api_key/api_key_header/priority"
+    )
+    urls: List[str] = Field(default_factory=list, description="RPC endpoint URLs (derived from endpoints)")
+    headers: Dict[str, str] = Field(default_factory=dict, description="HTTP headers to send with RPC requests")
     timeout: int = Field(default=30, ge=1, le=300, description="Request timeout in seconds")
     retries: int = Field(default=3, ge=0, le=10, description="Number of retry attempts")
+    max_block_batch: int = Field(default=10, ge=0, le=100, description="batch get events size")
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig, description="Rate limiting configuration")
 
     @field_validator("urls")
@@ -47,6 +53,42 @@ class RPCConfig(BaseModel):
             if not url_pattern.match(url):
                 raise ValueError(f"Invalid RPC URL format: {url}")
         return v
+
+    @model_validator(mode="after")
+    def populate_urls_from_endpoints(self):
+        """Populate urls from endpoints if provided and validate existence."""
+        # Work on local copies to avoid recursive validation loops
+        endpoints = list(self.endpoints) if self.endpoints else []
+        urls = list(self.urls) if self.urls else []
+
+        # Normalize priority: smaller number = higher priority; default by order if absent
+        normalized_endpoints: List[Dict[str, Any]] = []
+        if endpoints:
+            for idx, ep in enumerate(endpoints):
+                ep_copy = dict(ep)
+                if "priority" not in ep_copy or ep_copy["priority"] is None:
+                    ep_copy["priority"] = idx + 1
+                normalized_endpoints.append(ep_copy)
+
+            # Sort by priority ascending, then original order fallback
+            normalized_endpoints.sort(key=lambda item: item.get("priority", 0))
+            endpoints = normalized_endpoints
+
+        if endpoints and not urls:
+            extracted: List[str] = []
+            for ep in endpoints:
+                url = ep.get("url")
+                if url:
+                    extracted.append(url)
+            urls = extracted
+
+        if not urls:
+            raise ValueError("At least one RPC URL must be provided via endpoints or urls")
+
+        # Assign back without triggering validation recursion
+        object.__setattr__(self, "endpoints", endpoints)
+        object.__setattr__(self, "urls", urls)
+        return self
 
 
 class PollingConfig(BaseModel):
@@ -73,13 +115,14 @@ class ContractConfig(BaseModel):
         """Validate Ethereum address format and convert to checksum."""
         if not v:
             raise ValueError("Address cannot be empty")
-        # Ethereum address validation (0x + 40 hex characters)
-        address_pattern = re.compile(r'^0x[a-fA-F0-9]{40}$')
-        if not address_pattern.match(v):
-            raise ValueError(f"Invalid Ethereum address format: {v}")
+        # If it's an EVM-style address, enforce EVM rules; otherwise accept as-is
+        if v.startswith(("0x", "0X")):
+            address_pattern = re.compile(r'^0x[a-fA-F0-9]{40}$')
+            if not address_pattern.match(v):
+                raise ValueError(f"Invalid Ethereum address format: {v}")
+            return v.lower()
 
-        # Normalize to lowercase for backward compatibility in tests
-        return v.lower()
+        return v
 
 
 class ChainConfig(BaseModel):
@@ -87,7 +130,13 @@ class ChainConfig(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     enabled: bool = Field(default=True, description="Enable this blockchain")
-    chain_type: str = Field(..., description="Chain type (ethereum, solana, tron)")
+    chain_type: str = Field(
+        ...,
+        description=(
+            "Chain type (ethereum/bsc/polygon/arbitrum/optimism/"
+            "avalanche/base/kava/solana/tron)"
+        ),
+    )
     chain_id: Optional[int] = Field(default=None, ge=1, description="Chain ID")
     network: Optional[NetworkType] = Field(default=NetworkType.MAINNET, description="Network type")
     start_block: Optional[int] = Field(
@@ -99,7 +148,6 @@ class ChainConfig(BaseModel):
     polling_interval: int = Field(default=1000, ge=100, le=60000, description="Polling interval in milliseconds")
     rpc: RPCConfig = Field(..., description="RPC configuration for connection management")
     contracts: List[ContractConfig] = Field(default_factory=list, description="Smart contracts to monitor")
-    adapter_config: Optional[Dict[str, Any]] = Field(default=None, description="Adapter-specific configuration overrides")
 
 
 class RetryConfig(BaseModel):

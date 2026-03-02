@@ -19,8 +19,31 @@ class ChainType(str, Enum):
     """Supported blockchain types."""
     ETHEREUM = "ethereum"
     BSC = "bsc"
+    POLYGON = "polygon"
+    ARBITRUM = "arbitrum"
+    OPTIMISM = "optimism"
+    AVALANCHE = "avalanche"
+    BASE = "base"
+    KAVA = "kava"
     SOLANA = "solana"
     TRON = "tron"
+
+
+EVM_CHAIN_TYPES: Set[ChainType] = {
+    ChainType.ETHEREUM,
+    ChainType.BSC,
+    ChainType.POLYGON,
+    ChainType.ARBITRUM,
+    ChainType.OPTIMISM,
+    ChainType.AVALANCHE,
+    ChainType.BASE,
+    ChainType.KAVA,
+}
+
+
+def is_evm_chain_type(chain_type: ChainType) -> bool:
+    """Return whether a chain type is EVM-compatible."""
+    return chain_type in EVM_CHAIN_TYPES
 
 
 @dataclass
@@ -439,5 +462,3 @@ class EventBatch(BaseModel):
             chain_batches[event.chain_name].add_event(event)
 
         return chain_batches
-
-

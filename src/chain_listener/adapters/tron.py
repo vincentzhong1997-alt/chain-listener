@@ -38,6 +38,7 @@ class TronAdapter(BaseAdapter):
         super().__init__(config)
         self.logger = logging.getLogger(__name__)
 
+        # 重制默认配置
         self.block_time = config.get("block_time", self.DEFAULT_CONFIG["block_time"])
         self.event_page_size = config.get(
             "event_page_size", self.DEFAULT_CONFIG["event_page_size"]
@@ -45,6 +46,7 @@ class TronAdapter(BaseAdapter):
         self.max_event_pages = config.get(
             "max_event_pages", self.DEFAULT_CONFIG["max_event_pages"]
         )
+
         self.api_key = config.get("api_key") or self.rpc_config.get("api_key")
         if self.chain_type is None:
             self.chain_type = ChainType.TRON
@@ -83,12 +85,13 @@ class TronAdapter(BaseAdapter):
         return self._session is not None and not self._session.closed
 
     async def get_latest_block_number(self) -> int:
-        return await self._execute_with_client(lambda client: client.get_latest_block_number())
+        async def get_tron_lastest_block_number(client: Tron) -> int:
+            return client.get_latest_block_number()
+        return await self._execute_with_client(get_tron_lastest_block_number)
 
     async def get_logs(
         self,
         address: Optional[Union[str, List[str]]] = None,
-        topics: Optional[List[str]] = None,
         from_block: Optional[Union[int, str]] = None,
         to_block: Optional[Union[int, str]] = None,
         event_filters: Optional[Dict[str, List[str]]] = None,
@@ -121,15 +124,6 @@ class TronAdapter(BaseAdapter):
                         max_timestamp=max_timestamp,
                     )
                     logs.extend(events)
-            else:
-                fallback_event = self._event_name_from_topics(topics)
-                events = await self._fetch_contract_events(
-                    contract,
-                    event_name=fallback_event,
-                    min_timestamp=min_timestamp,
-                    max_timestamp=max_timestamp,
-                )
-                logs.extend(events)
 
         return logs
 
@@ -154,37 +148,17 @@ class TronAdapter(BaseAdapter):
             timestamp=int(timestamp),
         )
 
-    async def _execute_with_client(self, operation: Callable[[Tron], Any]) -> Any:
-        last_error: Optional[Exception] = None
-        max_retries = self._connection_pool.max_retries
-
-        for attempt in range(max_retries + 1):
-            endpoint = self._connection_pool.get_next_connection()
-            client = self._get_or_create_client(endpoint)
-
-            try:
-                result = await self._execute_with_rate_limit(lambda: operation(client))
-                self._connection_pool.mark_success(endpoint)
-                return result
-            except Exception as exc:
-                last_error = exc
-                self._connection_pool.mark_failure(endpoint)
-                if attempt < max_retries:
-                    continue
-
-        raise BlockchainAdapterError(
-            f"Tron operation failed after {max_retries + 1} attempts: {last_error}",
-            blockchain=self.name,
-            network=self.network,
-            details={"error": str(last_error)},
-        )
-
     def _get_or_create_client(self, endpoint: str) -> Tron:
         if endpoint not in self._clients:
+            api_key = self.api_key
+            if hasattr(self._connection_pool, "get_endpoint_meta"):
+                meta = self._connection_pool.get_endpoint_meta(endpoint)
+                api_key = meta.get("api_key") or api_key
+
             provider = HTTPProvider(
                 endpoint_uri=endpoint,
                 timeout=self.rpc_config.get("timeout", 30),
-                api_key=self.api_key,
+                api_key=api_key,
             )
             self._clients[endpoint] = Tron(provider=provider)
         return self._clients[endpoint]

@@ -3,34 +3,22 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 from chain_listener.adapters.base import BaseAdapter
 from chain_listener.exceptions import BlockchainAdapterError
 from chain_listener.models.events import ChainType, DecodedEvent, RawEvent
 
-try:  # pragma: no cover - optional dependency
-    from solana.publickey import PublicKey  # type: ignore
-    from solana.rpc.async_api import AsyncClient  # type: ignore
+from solders.pubkey import Pubkey
+from solders.rpc.responses import RpcConfirmedTransactionStatusWithSignature
+from solders.transaction_status import EncodedConfirmedTransactionWithStatusMeta
+from solders.signature import Signature
+from solana.rpc.async_api import AsyncClient  # type: ignore
+from solana.rpc.api import GetSignaturesForAddressResp
 
-    SOLANA_SDK_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
-    PublicKey = None  # type: ignore
-    AsyncClient = None  # type: ignore
-    SOLANA_SDK_AVAILABLE = False
 
-try:  # pragma: no cover - optional dependency
-    from anchorpy import Idl  # type: ignore
-    from anchorpy.coder import BorshCoder  # type: ignore
-    from anchorpy.coder.event import EventParser  # type: ignore
-
-    ANCHORPY_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
-    Idl = None  # type: ignore
-    BorshCoder = None  # type: ignore
-    EventParser = None  # type: ignore
-    ANCHORPY_AVAILABLE = False
-
+from anchorpy import Idl  # type: ignore
+from anchorpy import EventParser  # type: ignore
 
 class SolanaAdapter(BaseAdapter):
     """Adapter implementation for the Solana blockchain."""
@@ -74,7 +62,7 @@ class SolanaAdapter(BaseAdapter):
 
     async def connect(self) -> None:
         endpoint = self._connection_pool.get_next_connection()
-        await self._get_or_create_client(endpoint)
+        self._get_or_create_client(endpoint).get_transaction
         self._connected = True
 
     async def disconnect(self) -> None:
@@ -95,12 +83,11 @@ class SolanaAdapter(BaseAdapter):
         response = await self._execute_with_client(
             lambda client: client.get_block_height(commitment=self.commitment)
         )
-        return int(self._unwrap_rpc_result(response, default=0))
+        return response.value
 
     async def get_logs(
         self,
         address: Optional[Union[str, List[str]]] = None,
-        topics: Optional[List[str]] = None,
         from_block: Optional[Union[int, str]] = None,
         to_block: Optional[Union[int, str]] = None,
         event_filters: Optional[Dict[str, List[str]]] = None,
@@ -115,7 +102,6 @@ class SolanaAdapter(BaseAdapter):
         program_ids = [address] if isinstance(address, str) else list(address)
         from_slot = self._normalize_slot(from_block)
         to_slot = self._normalize_slot(to_block)
-        topic_filter = set(topics or [])
 
         logs: List[Dict[str, Any]] = []
         for program_id in program_ids:
@@ -123,11 +109,11 @@ class SolanaAdapter(BaseAdapter):
                 program_id, from_slot, to_slot
             )
             events = await self._build_events_from_signatures(
-                program_id, signatures, topic_filter
+                program_id, signatures, event_filters[program_id]
             )
-            if topic_filter:
+            if event_filters[program_id]:
                 events = [
-                    event for event in events if event.get("event_name") in topic_filter
+                    event for event in events if event.get("event_name") in event_filters[program_id]
                 ]
             logs.extend(events)
 
@@ -150,41 +136,24 @@ class SolanaAdapter(BaseAdapter):
             timestamp=int(timestamp),
         )
 
-    async def _execute_with_client(
-        self, operation: Callable[[Any], Awaitable[Any]]
-    ) -> Any:
-        last_error: Optional[Exception] = None
-        max_retries = self._connection_pool.max_retries
-
-        for attempt in range(max_retries + 1):
-            endpoint = self._connection_pool.get_next_connection()
-            client = await self._get_or_create_client(endpoint)
-
-            try:
-                result = await self._execute_with_rate_limit(operation, client)
-                self._connection_pool.mark_success(endpoint)
-                return result
-            except Exception as exc:
-                last_error = exc
-                self._connection_pool.mark_failure(endpoint)
-                if attempt < max_retries:
-                    continue
-                break
-
-        raise BlockchainAdapterError(
-            f"Solana RPC operation failed after {max_retries + 1} attempts: {last_error}",
-            blockchain=self.name,
-            network=self.network,
-            details={"error": str(last_error) if last_error else "unknown"},
-        )
-
-    async def _get_or_create_client(self, endpoint: str) -> AsyncClient:
+    def _get_or_create_client(self, endpoint: str) -> AsyncClient:
         if endpoint in self._clients:
             return self._clients[endpoint]
 
         self._ensure_solana_sdk()
         timeout = self.rpc_config.get("timeout", 30)
-        client = AsyncClient(endpoint, commitment=self.commitment, timeout=timeout)  # type: ignore[arg-type]
+        headers: Dict[str, str] = {}
+        rpc_headers = self.rpc_config.get("headers") or {}
+        headers.update(rpc_headers)
+        if hasattr(self._connection_pool, "get_headers"):
+            headers.update(self._connection_pool.get_headers(endpoint))
+
+        client = AsyncClient(
+            endpoint,
+            commitment=self.commitment,
+            timeout=timeout,
+            extra_headers=headers or None,  # type: ignore[arg-type]
+        )
         self._clients[endpoint] = client
         return client
 
@@ -195,7 +164,7 @@ class SolanaAdapter(BaseAdapter):
         to_slot: Optional[int],
     ) -> List[Dict[str, Any]]:
         self._ensure_solana_sdk()
-        pubkey = PublicKey(program_id)  # type: ignore[arg-type]
+        pubkey = Pubkey.from_string(program_id)  # type: ignore[arg-type]
 
         before: Optional[str] = None
         signatures: List[Dict[str, Any]] = []
@@ -203,7 +172,7 @@ class SolanaAdapter(BaseAdapter):
         reached_start = False
 
         while batch < self.max_signature_batches and not reached_start:
-            response = await self._execute_with_client(
+            response: GetSignaturesForAddressResp = await self._execute_with_client(
                 lambda client: client.get_signatures_for_address(
                     pubkey,
                     before=before,
@@ -211,13 +180,13 @@ class SolanaAdapter(BaseAdapter):
                     limit=self.signature_batch_size,
                 )
             )
-            entries = self._unwrap_rpc_result(response, default=[]) or []
+            entries = response.value
             if not isinstance(entries, list) or not entries:
                 break
 
             batch += 1
             for entry in entries:
-                slot = entry.get("slot")
+                slot = entry.slot
                 if slot is None:
                     continue
                 if to_slot is not None and slot > to_slot:
@@ -225,9 +194,9 @@ class SolanaAdapter(BaseAdapter):
                 if from_slot is not None and slot < from_slot:
                     reached_start = True
                     continue
-                signatures.append(entry)
+                signatures.append(entry.signature)
 
-            before = entries[-1].get("signature")
+            before = entries[-1].signature
             if not before:
                 break
 
@@ -236,7 +205,7 @@ class SolanaAdapter(BaseAdapter):
     async def _build_events_from_signatures(
         self,
         program_id: str,
-        signatures: List[Dict[str, Any]],
+        signatures: List[Signature],
         topic_filter: set,
     ) -> List[Dict[str, Any]]:
         events: List[Dict[str, Any]] = []
@@ -245,8 +214,7 @@ class SolanaAdapter(BaseAdapter):
 
         for chunk in self._chunk(signatures, self.transaction_batch_size):
             for signature_info in chunk:
-                signature = signature_info.get("signature")
-                if not signature:
+                if not signature_info:
                     continue
 
                 response = await self._execute_with_client(
@@ -273,18 +241,18 @@ class SolanaAdapter(BaseAdapter):
         self,
         program_id: str,
         signature_info: Dict[str, Any],
-        transaction: Dict[str, Any],
+        transaction: EncodedConfirmedTransactionWithStatusMeta,
         topic_filter: set,
     ) -> List[Dict[str, Any]]:
-        slot = transaction.get("slot") or signature_info.get("slot") or 0
-        block_time = transaction.get("blockTime") or signature_info.get("blockTime") or 0
-        meta = transaction.get("meta") or {}
-        log_messages = meta.get("logMessages") or []
-        block_hash = (
-            transaction.get("transaction", {})
-            .get("message", {})
-            .get("recentBlockhash", "")
-        )
+        # solders EncodedConfirmedTransactionWithStatusMeta exposes attributes, not dict access
+        slot = transaction.slot or signature_info.get("slot") or 0
+        block_time = transaction.block_time or signature_info.get("blockTime") or 0
+        meta = transaction.transaction.meta or {}
+        log_messages = meta.log_messages if hasattr(meta, "log_messages") else (meta.get("logMessages") if isinstance(meta, dict) else [])
+        block_hash = ""
+        if transaction.transaction and hasattr(transaction.transaction, "message"):
+            msg = transaction.transaction.message
+            block_hash = getattr(msg, "recent_blockhash", "") or getattr(msg, "recentBlockhash", "")
 
         parser = self._event_parsers.get(self._normalize_program_id(program_id))
         parsed_events: List[Dict[str, Any]] = []
@@ -339,9 +307,6 @@ class SolanaAdapter(BaseAdapter):
         return events
 
     def _prepare_event_parsers(self) -> None:
-        if not (SOLANA_SDK_AVAILABLE and ANCHORPY_AVAILABLE):
-            return
-
         for contract in self._contract_configs:
             program_id = contract.get("address")
             abi_path = contract.get("abi_path")
@@ -357,22 +322,15 @@ class SolanaAdapter(BaseAdapter):
                 self._event_parsers[self._normalize_program_id(program_id)] = parser
 
     def _create_event_parser(self, program_id: str, idl: Any) -> Optional[Any]:
-        if not (ANCHORPY_AVAILABLE and SOLANA_SDK_AVAILABLE):
-            return None
-
-        if BorshCoder is None or EventParser is None or PublicKey is None:
-            return None
-
         try:
             if hasattr(Idl, "from_json"):
-                idl_obj = Idl.from_json(idl)  # type: ignore[call-arg]
+                idl_obj = Idl.from_json(idl)  
             elif callable(Idl):
-                idl_obj = Idl(idl)  # type: ignore[call-arg]
+                idl_obj = Idl(idl)  
             else:
                 idl_obj = idl
 
-            coder = BorshCoder(idl_obj)  # type: ignore[call-arg]
-            return EventParser(PublicKey(program_id), coder)  # type: ignore[arg-type]
+            return EventParser(Pubkey.from_string(program_id), idl_obj)  
         except Exception as exc:
             self.logger.warning(
                 "Unable to build Anchor parser for %s: %s", program_id, exc
@@ -392,12 +350,7 @@ class SolanaAdapter(BaseAdapter):
         return program_id.strip()
 
     def _ensure_solana_sdk(self) -> None:
-        if not SOLANA_SDK_AVAILABLE:
-            raise BlockchainAdapterError(
-                "solana dependency is required for SolanaAdapter",
-                blockchain=self.name,
-                network=self.network,
-            )
+        pass
 
     @staticmethod
     def _unwrap_rpc_result(response: Any, default: Any = None) -> Any:
@@ -409,6 +362,8 @@ class SolanaAdapter(BaseAdapter):
                 return result
             if "value" in response:
                 return response["value"]
+        if getattr(response, "value"):
+            return response.value
         return response if response is not None else default
 
     @staticmethod

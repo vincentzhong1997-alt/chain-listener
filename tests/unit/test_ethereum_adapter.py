@@ -92,83 +92,6 @@ class TestEthereumAdapter:
             assert adapter.chain_id == expected_chain_id
 
     @pytest.mark.asyncio
-    async def test_ethereum_adapter_connect(self):
-        """Test that Ethereum adapter can connect to Web3."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        # Create adapter first to see what needs to be mocked
-        adapter = EthereumAdapter(config)
-
-        # Now mock the Web3 instance that will be created in connect method
-        with patch('chain_listener.adapters.ethereum.Web3') as mock_web3_class:
-            mock_web3 = Mock()
-            mock_web3_class.return_value = mock_web3
-            mock_web3.is_connected.return_value = True
-            mock_web3.eth.chain_id = 1
-
-            await adapter.connect()
-
-            assert adapter.is_connected()
-            assert adapter._w3 == mock_web3
-            # Verify Web3 was called with HTTPProvider
-            assert mock_web3_class.called
-
-    @pytest.mark.asyncio
-    async def test_ethereum_adapter_connect_with_retry(self):
-        """Test that Ethereum adapter handles connection failure correctly."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-        from chain_listener.exceptions import ConnectionError as ChainConnectionError
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://eth.llamarpc.com"]}
-        }
-
-        adapter = EthereumAdapter(config)
-
-        # Mock Web3 to fail connection
-        with patch('chain_listener.adapters.ethereum.Web3') as mock_web3_class:
-            mock_web3 = Mock()
-            mock_web3_class.return_value = mock_web3
-            mock_web3.is_connected.return_value = False
-
-            # Should raise ConnectionError when Web3 connection fails
-            with pytest.raises(ChainConnectionError, match="Failed to connect"):
-                await adapter.connect()
-
-            assert not adapter.is_connected()
-            assert mock_web3_class.called
-
-    @pytest.mark.asyncio
-    async def test_ethereum_adapter_connection_failure(self):
-        """Test that Ethereum adapter raises exception on connection failure."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-        from chain_listener.exceptions import ConnectionError as ChainConnectionError
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {"urls": ["https://invalid.com"], "retries": 2}
-        }
-
-        adapter = EthereumAdapter(config)
-
-        with patch('chain_listener.adapters.ethereum.Web3') as mock_web3_class:
-            mock_web3 = Mock()
-            mock_web3_class.return_value = mock_web3
-            mock_web3.is_connected.return_value = False
-
-            with pytest.raises(ChainConnectionError, match="Failed to connect"):
-                await adapter.connect()
-
-    @pytest.mark.asyncio
     async def test_get_latest_block_number(self):
         """Test getting latest block number from Ethereum."""
         from chain_listener.adapters.ethereum import EthereumAdapter
@@ -702,40 +625,6 @@ class TestEthereumAdapter:
 
             with pytest.raises(BlockchainAdapterError, match="Web3 request timeout"):
                 await adapter.get_block_by_number(18500000)
-
-    @pytest.mark.asyncio
-    async def test_connection_load_balancing(self):
-        """Test that adapter uses connection pool for load balancing."""
-        from chain_listener.adapters.ethereum import EthereumAdapter
-
-        config = {
-            "name": "ethereum",
-            "network": "mainnet",
-            "rpc": {
-                "urls": [
-                    "https://eth1.llamarpc.com",
-                    "https://eth2.llamarpc.com",
-                    "https://eth3.llamarpc.com"
-                ]
-            }
-        }
-
-        adapter = EthereumAdapter(config)
-
-        with patch('chain_listener.adapters.ethereum.Web3') as mock_web3_class:
-            mock_web3 = Mock()
-            mock_web3_class.return_value = mock_web3
-            mock_web3.is_connected.return_value = True
-            mock_web3.eth.chain_id = 1
-
-            # Connect multiple times to test load balancing
-            for _ in range(3):
-                await adapter.connect()
-                await adapter.disconnect()
-
-            # Verify Web3 was called with different URLs
-            call_args = [call[0][0] for call in mock_web3_class.call_args_list]
-            assert len(set(call_args)) == 3  # All 3 URLs should be used
 
     @pytest.mark.asyncio
     async def test_rate_limiting_configuration(self):

@@ -28,10 +28,12 @@ def mock_config():
                 confirmation_blocks=12,
                 polling_interval=15000,
                 enabled=True,
-                rpc_urls=[
-                    {"url": "https://eth.llamarpc.com", "priority": 1},
-                    {"url": "https://backup.eth.llamarpc.com", "priority": 2}
-                ],
+                rpc={
+                    "endpoints": [
+                        {"url": "https://eth.llamarpc.com", "priority": 1},
+                        {"url": "https://backup.eth.llamarpc.com", "priority": 2}
+                    ]
+                },
                 contracts=[
                     {
                         "name": "WBTC",
@@ -83,7 +85,7 @@ class TestChainListenerValidation:
                 "ethereum": ChainConfig(
                     chain_type=ChainType.ETHEREUM,
                     chain_id=1,
-                    rpc_urls=[]  # Empty RPC URLs
+                    rpc={"endpoints": []}  # Empty RPC endpoints
                 )
             },
             global_config=GlobalConfig()
@@ -99,7 +101,7 @@ class TestChainListenerValidation:
             "chains": {
                 "ethereum": {
                     "chain_id": 1,
-                    "rpc_urls": [{"url": "https://eth.llamarpc.com", "priority": 1}]
+                    "rpc": {"endpoints": [{"url": "https://eth.llamarpc.com"}]}
                     # Missing chain_type
                 }
             },
@@ -162,7 +164,7 @@ class TestChainListenerAdapterManagement:
     def test_get_adapter_factory_ethereum(self):
         """Test getting Ethereum adapter factory."""
         config = ChainListenerConfig(
-            chains={"ethereum": ChainConfig(chain_type=ChainType.ETHEREUM, rpc_urls=[{"url": "test", "priority": 1}])},
+            chains={"ethereum": ChainConfig(chain_type=ChainType.ETHEREUM, rpc={"endpoints": [{"url": "test"}]})},
             global_config=GlobalConfig()
         )
 
@@ -175,7 +177,7 @@ class TestChainListenerAdapterManagement:
     def test_get_adapter_factory_unsupported(self):
         """Test getting factory for unsupported chain type."""
         config = ChainListenerConfig(
-            chains={"ethereum": ChainConfig(chain_type=ChainType.ETHEREUM, rpc_urls=[{"url": "test", "priority": 1}])},
+            chains={"ethereum": ChainConfig(chain_type=ChainType.ETHEREUM, rpc={"endpoints": [{"url": "test"}]})},
             global_config=GlobalConfig()
         )
 
@@ -192,7 +194,7 @@ class TestChainListenerAdapterManagement:
             chain_id=1,
             confirmation_blocks=12,
             polling_interval=15000,
-            rpc_urls=[{"url": "https://eth.llamarpc.com", "priority": 1}],
+            rpc={"endpoints": [{"url": "https://eth.llamarpc.com"}]},
             contracts=[
                 {
                     "name": "WBTC",
@@ -208,7 +210,7 @@ class TestChainListenerAdapterManagement:
         assert adapter_config["chain_id"] == 1
         assert adapter_config["confirmation_blocks"] == 12
         assert adapter_config["polling_interval"] == 15000
-        assert len(adapter_config["rpc_urls"]) == 1
+        assert len(adapter_config["rpc"]["urls"]) == 1
         assert len(adapter_config["contracts"]) == 1
         assert adapter_config["contracts"][0]["name"] == "WBTC"
 
@@ -350,7 +352,7 @@ class TestChainListenerListening:
             chain_type=ChainType.ETHEREUM,
             chain_id=1,
             polling_interval=1,  # 1ms for fast test
-            rpc_urls=[{"url": "test", "priority": 1}]
+            rpc={"endpoints": [{"url": "test"}]}
         )
 
         # Run for a short time then cancel
@@ -387,7 +389,7 @@ class TestChainListenerListening:
             chain_type=ChainType.ETHEREUM,
             chain_id=1,
             polling_interval=1,  # 1ms for fast test
-            rpc_urls=[{"url": "test", "priority": 1}]
+            rpc={"endpoints": [{"url": "test"}]}
         )
 
         # Run for a short time then cancel
@@ -587,7 +589,7 @@ class TestChainListenerAdvanced:
         new_config = ChainConfig(
             chain_type="invalid_chain",
             chain_id=999,
-            rpc_urls=[{"url": "test", "priority": 1}]
+            rpc={"endpoints": [{"url": "test"}]}
         )
 
         with pytest.raises(ValueError):
@@ -602,7 +604,7 @@ class TestChainListenerAdvanced:
         new_config = ChainConfig(
             chain_type=ChainType.SOLANA,
             chain_id=999,
-            rpc_urls=[{"url": "test", "priority": 1}]
+            rpc={"endpoints": [{"url": "test"}]}
         )
 
         with patch.object(chain_listener._adapter_registry, 'register_adapter') as mock_register:

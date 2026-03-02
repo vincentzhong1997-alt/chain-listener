@@ -166,6 +166,7 @@ async def test_get_logs_uses_event_filters_for_tron():
     adapter = TronAdapter(_build_config())
 
     adapter._fetch_contract_events = AsyncMock(return_value=[])
+    adapter._block_to_timestamp = AsyncMock(return_value=None)
 
     await adapter.get_logs(
         address="TXYZ",

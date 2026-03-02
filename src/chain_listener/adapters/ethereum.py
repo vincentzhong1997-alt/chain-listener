@@ -23,10 +23,8 @@ from chain_listener.adapters.base import BaseAdapter, PriorityConnectionPool
 from chain_listener.models.events import RawEvent, DecodedEvent
 from chain_listener.exceptions import (
     BlockchainAdapterError,
-    ConnectionError as ChainConnectionError,
     BlockNotFoundError,
     TransactionError,
-    RateLimitError
 )
 
 
@@ -103,56 +101,20 @@ class EthereumAdapter(BaseAdapter):
         # Call parent validation for standard config validation
         super()._validate_config(config)
 
-    def _get_or_create_web3_instance(self, url: str) -> Web3:
+    def _get_or_create_client(self, url: str) -> Web3:
         """获取或创建 Web3 实例（带缓存）"""
         if url not in self._web3_instances:
+            headers = self._connection_pool.get_headers(url)
+            request_kwargs = {
+                "timeout": self.rpc_config.get("timeout", 30)
+            }
+            if headers:
+                request_kwargs["headers"] = headers
             self._web3_instances[url] = Web3(Web3.HTTPProvider(
                 url,
-                request_kwargs={
-                    "timeout": self.rpc_config.get("timeout", 30)
-                }
+                request_kwargs=request_kwargs
             ))
         return self._web3_instances[url]
-
-    async def _execute_with_priority_routing(self, operation: Callable, *args, **kwargs) -> Any:
-        """使用优先级路由执行操作"""
-        last_exception = None
-
-        # 尝试所有端点，最多 max_retries 次
-        max_retries = self._connection_pool.max_retries
-        for attempt in range(max_retries + 1):
-            # 获取当前最佳端点
-            url = self._connection_pool.get_next_connection()
-
-            # 获取 Web3 实例
-            w3 = self._get_or_create_web3_instance(url)
-
-            try:
-                # 执行操作
-                result = await self._execute_with_rate_limit(
-                    lambda: operation(w3, *args, **kwargs)
-                )
-
-                # 标记成功
-                self._connection_pool.mark_success(url)
-                return result
-
-            except Exception as e:
-                last_exception = e
-                # 标记失败
-                self._connection_pool.mark_failure(url)
-
-                # 如果不是最后一次尝试，记录日志并继续
-                if attempt < max_retries:
-                    self.logger.warning(
-                        f"RPC endpoint {url} failed (attempt {attempt + 1}/{max_retries + 1}): {e}"
-                    )
-                    continue
-
-        # 所有重试都失败了
-        raise BlockchainAdapterError(
-            f"All RPC endpoints failed after {max_retries} retries: {last_exception}"
-        )
 
     
     async def connect(self) -> None:
@@ -192,9 +154,7 @@ class EthereumAdapter(BaseAdapter):
         Raises:
             BlockchainAdapterError: If request fails
         """
-        return await self._execute_with_priority_routing(
-            lambda w3: w3.eth.block_number
-        )
+        return await self._execute_with_client(lambda w3: w3.eth.block_number)
 
     async def get_block_by_number(self, block_number: int) -> Dict[str, Any]:
         """Get block information by number from Ethereum.
@@ -263,7 +223,6 @@ class EthereumAdapter(BaseAdapter):
     async def get_logs(
         self,
         address: Optional[Union[str, List[str]]] = None,
-        topics: Optional[List[str]] = None,
         from_block: Optional[int] = None,
         to_block: Optional[int] = None,
         event_filters: Optional[Dict[str, List[str]]] = None
@@ -295,44 +254,35 @@ class EthereumAdapter(BaseAdapter):
                 return hex(value)
             raise TypeError(f"Unsupported block parameter type: {type(value)}")
 
-        block_ranges = self._build_block_ranges(from_block, to_block)
-        all_logs: List[Dict[str, Any]] = []
+        def get_logs_operation(w3: Web3):
+            # Build filter parameters for the provided range
+            filter_params = {}
+            if address:
+                filter_params["address"] = address
+            if topic_filter:
+                filter_params["topics"] = topic_filter
+            formatted_from = _format_block_param(from_block)
+            formatted_to = _format_block_param(to_block)
+            if formatted_from is not None:
+                filter_params["fromBlock"] = formatted_from
+            if formatted_to is not None:
+                filter_params["toBlock"] = formatted_to
 
-        for chunk_from, chunk_to in block_ranges:
-
-            def get_logs_operation(w3, chunk_from=chunk_from, chunk_to=chunk_to):
-                # Build filter parameters
-                filter_params = {}
-                if address:
-                    filter_params["address"] = address
-                if topic_filter:
-                    filter_params["topics"] = topic_filter
-                elif topics:
-                    filter_params["topics"] = topics
-                formatted_from = _format_block_param(chunk_from)
-                formatted_to = _format_block_param(chunk_to)
-                if formatted_from is not None:
-                    filter_params["fromBlock"] = formatted_from
-                if formatted_to is not None:
-                    filter_params["toBlock"] = formatted_to
-
-                self.logger.debug(
-                    "Fetching logs with params: address=%s, from=%s, to=%s, topics=%s",
-                    filter_params.get("address"),
-                    filter_params.get("fromBlock"),
-                    filter_params.get("toBlock"),
-                    filter_params.get("topics"),
-                )
-
-                return w3.eth.get_logs(filter_params)
-
-            logs = await self._execute_with_priority_routing(get_logs_operation)
-            all_logs.extend(
-                self._convert_log_to_standard_format(log)
-                for log in logs
+            self.logger.debug(
+                "Fetching logs with params: address=%s, from=%s, to=%s, topics=%s",
+                filter_params.get("address"),
+                filter_params.get("fromBlock"),
+                filter_params.get("toBlock"),
+                filter_params.get("topics"),
             )
 
-        return all_logs
+            return w3.eth.get_logs(filter_params)
+
+        logs = await self._execute_with_client(get_logs_operation)
+        return [
+            self._convert_log_to_standard_format(log)
+            for log in logs
+        ]
 
     def _build_topic_filters(
         self, event_filters: Optional[Dict[str, List[str]]]

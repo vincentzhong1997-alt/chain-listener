@@ -49,7 +49,7 @@ __all__ = [
 
 # Convenience imports for advanced usage
 from .core import AdapterRegistry, CallbackRegistry, EventProcessor, StateManager
-from .adapters import BaseAdapter, EthereumAdapter, SolanaAdapter, TronAdapter
+from .adapters import BaseAdapter, EVMAdapter, EthereumAdapter, SolanaAdapter, TronAdapter
 from .storage import StorageBackend, InMemoryStorage
 
 __all__.extend([
@@ -61,6 +61,7 @@ __all__.extend([
 
     # Adapters
     "BaseAdapter",
+    "EVMAdapter",
     "EthereumAdapter",
     "SolanaAdapter",
     "TronAdapter",

@@ -9,7 +9,7 @@ import asyncio
 from typing import Dict, List, Callable, Optional, Any, Type
 from ..models.events import ChainType
 from ..adapters.base import BaseAdapter
-from ..adapters.ethereum import EthereumAdapter
+from ..adapters.evm import EVMAdapter
 from ..adapters.solana import SolanaAdapter
 from ..adapters.tron import TronAdapter
 from ..exceptions import BlockchainAdapterError
@@ -180,6 +180,13 @@ class AdapterRegistry:
 adapter_registry = AdapterRegistry()
 
 # Register built-in adapters so they are available out of the box.
-adapter_registry.register_adapter_type(ChainType.ETHEREUM, EthereumAdapter)
+adapter_registry.register_adapter_type(ChainType.ETHEREUM, EVMAdapter)
+adapter_registry.register_adapter_type(ChainType.BSC, EVMAdapter)
+adapter_registry.register_adapter_type(ChainType.POLYGON, EVMAdapter)
+adapter_registry.register_adapter_type(ChainType.ARBITRUM, EVMAdapter)
+adapter_registry.register_adapter_type(ChainType.OPTIMISM, EVMAdapter)
+adapter_registry.register_adapter_type(ChainType.AVALANCHE, EVMAdapter)
+adapter_registry.register_adapter_type(ChainType.BASE, EVMAdapter)
+adapter_registry.register_adapter_type(ChainType.KAVA, EVMAdapter)
 adapter_registry.register_adapter_type(ChainType.SOLANA, SolanaAdapter)
 adapter_registry.register_adapter_type(ChainType.TRON, TronAdapter)

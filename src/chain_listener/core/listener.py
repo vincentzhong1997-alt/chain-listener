@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, Callable, List
 from pathlib import Path
 
 from ..models.config import ChainListenerConfig, ChainConfig
-from ..models.events import ChainType, RawEvent
+from ..models.events import ChainType, RawEvent, is_evm_chain_type
 from ..exceptions import ChainListenerError, BlockchainAdapterError
 from ..adapters.base import BaseAdapter
 from .adapter_registry import AdapterRegistry, adapter_registry
@@ -20,6 +20,7 @@ from .state_manager import StateManager
 from ..storage import StorageBackend
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 
 class ChainListener:
@@ -146,19 +147,30 @@ class ChainListener:
         Returns:
             Dict[str, Any]: Adapter configuration
         """
-        # Extract user-provided adapter config overrides
-        user_overrides = chain_config.adapter_config or {}
 
         # Use the new standardized RPC configuration
         # URL ordering determines priority (convention over configuration)
+        rpc_headers = dict(chain_config.rpc.headers)
+        for ep in chain_config.rpc.endpoints or []:
+            api_key = ep.get("api_key")
+            header_name = ep.get("api_key_header")
+            if not api_key:
+                continue
+            if not header_name and chain_config.chain_type == "tron":
+                header_name = "TRON-PRO-API-KEY"
+            if header_name:
+                rpc_headers[header_name] = api_key
+
         adapter_config = {
             "name": f"{chain_config.chain_type}_adapter",
             "network": "mainnet",
             "chain_type": chain_config.chain_type,
             "rpc": {
+                "endpoints": chain_config.rpc.endpoints,
                 "urls": chain_config.rpc.urls,
                 "timeout": chain_config.rpc.timeout,
                 "retries": chain_config.rpc.retries,
+                "headers": rpc_headers,
                 "rate_limit": {
                     "requests_per_second": chain_config.rpc.rate_limit.requests_per_second,
                     "burst_size": chain_config.rpc.rate_limit.burst_size
@@ -176,15 +188,6 @@ class ChainListener:
                 for contract in chain_config.contracts
             ]
         }
-
-        # Apply user overrides (deep merge for nested dictionaries)
-        for key, value in user_overrides.items():
-            if key == "rpc" and isinstance(value, dict) and isinstance(adapter_config.get("rpc"), dict):
-                # Deep merge for rpc config
-                adapter_config["rpc"].update(value)
-            else:
-                # Direct replacement for other fields
-                adapter_config[key] = value
 
         return adapter_config
 
@@ -346,39 +349,69 @@ class ChainListener:
 
             while self.is_listening:
                 try:
+                    logger.debug(f"{chain_name} try get latest block")
                     # Get latest block
                     latest_block = await self._get_latest_block(adapter)
 
                     if latest_block > last_block:
-                        # Get events from last_block+1 to latest_block
-                        events = await self._get_events_from_chain(
-                            adapter, chain_type, last_block + 1, latest_block
-                        )
+                        logger.debug(f"{chain_name} found new block {latest_block}")
 
-                        if events:
-                            # Process events
-                            results = await self._event_processor.process_events(events)
+                        batch_size = self._get_block_batch_size(chain_type, chain_config)
+                        while last_block < latest_block:
+                            start_block = last_block + 1
+                            end_block = min(start_block + batch_size - 1, latest_block)
 
-                            # Log processing results
-                            success_count = sum(1 for r in results if r.success)
-                            if success_count > 0:
-                                logger.info(
-                                    f"Processed {success_count} events from {chain_name}"
-                                )
+                            events = await self._get_events_from_chain(
+                                adapter, chain_type, start_block, end_block
+                            )
 
-                        last_block = latest_block
+                            if events:
+                                # Process events
+                                results = await self._event_processor.process_events(events)
 
-                    # Wait before next poll
-                    await asyncio.sleep(chain_config.polling_interval / 1000.0)
+                                # Log processing results
+                                success_count = sum(1 for r in results if r.success)
+                                if success_count > 0:
+                                    logger.info(
+                                        f"Processed {success_count} events from {chain_name} (blocks {start_block}-{end_block})"
+                                    )
+
+                            last_block = end_block
+
+                            # Wait before next poll
+                            await asyncio.sleep(chain_config.polling_interval / 1000.0)
+                    else:
+                        # No new blocks yet, still respect polling interval.
+                        await asyncio.sleep(chain_config.polling_interval / 1000.0)
 
                 except Exception as e:
                     logger.error(f"Error listening to {chain_name}: {e}")
                     await asyncio.sleep(5)  # Wait before retry
 
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as e:
             logger.info(f"Stopped listening to {chain_name}")
+            raise e
         except Exception as e:
             logger.error(f"Fatal error listening to {chain_name}: {e}")
+            raise e
+
+    def _get_block_batch_size(self, chain_type: ChainType, chain_config: ChainConfig) -> int:
+        """Determine the max block batch size per chain type, with optional overrides."""
+        # Per-chain sensible defaults; can be tuned as needed.
+        if is_evm_chain_type(chain_type):
+            batch = 500
+        elif chain_type == ChainType.TRON:
+            batch = 200
+        elif chain_type == ChainType.SOLANA:
+            batch = 1000
+        else:
+            batch = 500
+
+        user_batch = chain_config.rpc.max_block_batch
+        if isinstance(user_batch, int) and user_batch > 0:
+            batch = user_batch
+
+        return max(batch, 1)
 
     async def _get_latest_block(self, adapter: BaseAdapter) -> int:
         """Get the latest block number from an adapter.
@@ -389,13 +422,7 @@ class ChainListener:
         Returns:
             int: Latest block number
         """
-        if hasattr(adapter, 'get_latest_block_number'):
-            if asyncio.iscoroutinefunction(adapter.get_latest_block_number):
-                return await adapter.get_latest_block_number()
-            else:
-                return adapter.get_latest_block_number()
-        else:
-            raise ChainListenerError("Adapter does not support getting latest block")
+        return await adapter.get_latest_block_number()
 
     async def _get_events_from_chain(
         self,
@@ -473,7 +500,7 @@ class ChainListener:
             return stored_block
 
         if chain_config and chain_config.start_block is not None:
-            return max(chain_config.start_block, 0)
+            return max(chain_config.start_block-1, 0)
 
         adapter = self._adapter_registry.get_adapter(chain_type)
         latest = await self._get_latest_block(adapter)
@@ -562,7 +589,7 @@ class ChainListener:
 
     def _normalize_contract_address(self, chain_type: ChainType, address: str) -> str:
         """Normalize callback contract addresses per-chain."""
-        if chain_type in (ChainType.ETHEREUM, ChainType.BSC):
+        if is_evm_chain_type(chain_type):
             from web3 import Web3
 
             try:
