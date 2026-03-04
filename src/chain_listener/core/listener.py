@@ -108,6 +108,32 @@ class ChainListener:
             if not chain_config.chain_type:
                 raise ChainListenerError(f"No chain type specified for chain: {chain_name}")
 
+    def set_storage_backend(self, storage_backend: StorageBackend) -> None:
+        """Replace storage backend used for chain state persistence.
+
+        Args:
+            storage_backend: New backend instance implementing StorageBackend.
+
+        Raises:
+            ChainListenerError: If called while listener is running.
+            TypeError: If backend does not implement StorageBackend.
+        """
+        if not isinstance(storage_backend, StorageBackend):
+            raise TypeError("storage_backend must implement StorageBackend")
+
+        if self._is_listening:
+            raise ChainListenerError("Cannot change storage backend while listening")
+
+        self._state_manager = StateManager(
+            storage_backend=storage_backend,
+            key_prefix=self.config.storage.key_prefix,
+        )
+
+        if self._event_processor is not None:
+            self._event_processor._state_manager = self._state_manager
+
+        logger.info("Storage backend has been updated")
+
     def _initialize_adapters(self) -> None:
         """Initialize blockchain adapters from configuration.
 
