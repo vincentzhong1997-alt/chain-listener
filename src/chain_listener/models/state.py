@@ -20,13 +20,11 @@ class BlockState:
     Attributes:
         chain_type: The blockchain network this state belongs to.
         block_number: The highest processed block number for the chain.
-        block_hash: The corresponding block hash, used for reorg detection.
         processed_at: Unix timestamp indicating when the block was processed.
     """
 
     chain_type: ChainType
     block_number: int
-    block_hash: str
     processed_at: int
 
     @classmethod
@@ -47,7 +45,6 @@ class BlockState:
         return cls(
             chain_type=chain_type,
             block_number=int(data.get("block_number", 0)),
-            block_hash=str(data.get("block_hash", "")),
             processed_at=int(data.get("processed_at", 0)),
         )
 
@@ -56,6 +53,5 @@ class BlockState:
         return {
             "chain_type": self.chain_type.value,
             "block_number": self.block_number,
-            "block_hash": self.block_hash,
             "processed_at": self.processed_at,
         }

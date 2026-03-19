@@ -28,7 +28,7 @@ from .models.config import ChainListenerConfig, ChainConfig
 from .models.events import ChainType, RawEvent, DecodedEvent
 from .exceptions import ChainListenerError
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"
 __author__ = "Chain Listener Team"
 
 # Main API exports

@@ -7,16 +7,13 @@ with other components.
 import pytest
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch
-from typing import Dict, Any
 
 from web3 import Web3
 
 from chain_listener.core.listener import ChainListener
-from chain_listener.core.adapter_registry import AdapterRegistry
-from chain_listener.core.callback_registry import CallbackRegistry
-from chain_listener.models.config import ChainListenerConfig, ChainConfig
+from chain_listener.models.config import ChainListenerConfig
 from chain_listener.models.events import ChainType, RawEvent, DecodedEvent
-from chain_listener.exceptions import ChainListenerError, BlockchainAdapterError
+from chain_listener.exceptions import ChainListenerError
 
 
 class TestChainListener:
@@ -253,57 +250,11 @@ class TestChainListener:
             await chain_listener.get_latest_block("invalid")
 
     @pytest.mark.asyncio
-    async def test_context_manager(self, chain_listener: ChainListener):
-        """Test using ChainListener as async context manager."""
-        chain_listener.start_listening = AsyncMock()
-        chain_listener.stop_listening = AsyncMock()
-
-        async with chain_listener as listener:
-            assert listener == chain_listener
-            chain_listener.start_listening.assert_called_once()
-
-        chain_listener.stop_listening.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_add_chain_support(self, chain_listener: ChainListener):
-        """Test adding support for a new chain."""
-        new_chain_config = ChainConfig(
-            chain_type="bsc",
-            chain_id=56,
-            rpc={"endpoints": [{"url": "https://rpc.ankr.com/bsc"}]}
-        )
-
-        with patch('chain_listener.core.listener.ChainType') as mock_chain_type, \
-             patch.object(chain_listener, '_get_adapter_factory') as mock_factory:
-
-            mock_chain_type.return_value = ChainType.BSC
-            mock_factory.return_value = Mock()
-
-            chain_listener._add_chain_support("bsc", new_chain_config)
-
-            assert "bsc" in chain_listener.config.chains
-            mock_chain_type.assert_called_once_with("bsc")
-
-    @pytest.mark.asyncio
-    async def test_add_chain_support_when_listening_raises_error(self, chain_listener: ChainListener):
-        """Test that adding chain while listening raises error."""
-        chain_listener._is_listening = True
-
-        new_chain_config = ChainConfig(
-            chain_type="ethereum",
-            rpc={"endpoints": [{"url": "https://ethereum-dataseed.binance.org"}]}
-        )
-
-        with pytest.raises(ChainListenerError, match="Cannot add chain while listening"):
-            chain_listener._add_chain_support("ethereum", new_chain_config)
-
-    @pytest.mark.asyncio
-    async def test_add_existing_chain_raises_error(self, chain_listener: ChainListener):
-        """Test that adding existing chain raises error."""
-        existing_config = chain_listener.config.chains["ethereum"]
-
-        with pytest.raises(ChainListenerError, match="Chain 'ethereum' already exists"):
-            chain_listener._add_chain_support("ethereum", existing_config)
+    async def test_context_manager_not_supported(self, chain_listener: ChainListener):
+        """ChainListener should not be used as an async context manager."""
+        with pytest.raises(TypeError):
+            async with chain_listener:
+                pass
 
 
 class TestChainListenerIntegration:
@@ -321,7 +272,19 @@ class TestChainListenerIntegration:
                     "polling_interval": 1000,
                     "rpc": {
                         "endpoints": [{"url": "https://eth.llamarpc.com"}]
-                    }
+                    },
+                    "contracts": [
+                        {
+                            "name": "TokenA",
+                            "address": "0x1234567890123456789012345678901234567890",
+                            "events": ["Transfer", "Approval"],
+                        },
+                        {
+                            "name": "TokenB",
+                            "address": "0x9999999999999999999999999999999999999999",
+                            "events": ["Transfer"],
+                        },
+                    ],
                 }
             },
             "global_config": {
@@ -341,9 +304,15 @@ class TestChainListenerIntegration:
             callback1 = Mock()
             callback2 = Mock()
 
-            listener.on_event("ethereum", "0x123...", "Transfer", callback1)
-            listener.on_event("ethereum", "0x123...", "Approval", callback2)
-            listener.on_event("ethereum", "0x456...", "Transfer", callback2)
+            listener.on_event(
+                "ethereum", "0x1234567890123456789012345678901234567890", "Transfer", callback1
+            )
+            listener.on_event(
+                "ethereum", "0x1234567890123456789012345678901234567890", "Approval", callback2
+            )
+            listener.on_event(
+                "ethereum", "0x9999999999999999999999999999999999999999", "Transfer", callback2
+            )
 
             # Check registry stats
             stats = listener._callback_registry.get_stats()
@@ -365,7 +334,7 @@ class TestChainListenerIntegration:
                     block_hash="0xabc...",
                     transaction_hash="0xdef...",
                     log_index=0,
-                    contract_address="0x123...",
+                    contract_address="0x1234567890123456789012345678901234567890",
                     raw_data={},
                     timestamp=1640995200
                 )
@@ -373,24 +342,23 @@ class TestChainListenerIntegration:
 
             # Mock adapter decoding
             mock_adapter = Mock()
-            mock_adapter.decode_event = AsyncMock(return_value=DecodedEvent(
-                chain_type=ChainType.ETHEREUM,
-                contract_address="0x123...",
-                event_name="Transfer",
-                parameters={"from": "0x111...", "to": "0x222...", "value": "1000"},
-                block_number=12345,
+                mock_adapter.decode_event = AsyncMock(return_value=DecodedEvent(
+                    chain_type=ChainType.ETHEREUM,
+                    contract_address="0x1234567890123456789012345678901234567890",
+                    event_name="Transfer",
+                    parameters={"from": "0x111...", "to": "0x222...", "value": "1000"},
+                    block_number=12345,
                 transaction_hash="0xdef...",
                 log_index=0,
                 timestamp=1640995200
             ))
 
-            with patch('chain_listener.core.adapter_registry.adapter_registry.get_adapter', return_value=mock_adapter):
-                # Process events
-                results = await listener._event_processor.process_events(raw_events)
+            listener._event_processor._adapter_registry.get_adapter.return_value = mock_adapter
+            results = await listener._event_processor.process_events(raw_events)
 
-                assert len(results) == 1
-                assert results[0].success is True
-                assert results[0].decoded_event.event_name == "Transfer"
+            assert len(results) == 1
+            assert results[0].success is True
+            assert results[0].decoded_event.event_name == "Transfer"
 
     def test_adapter_registry_integration(self, simple_config: ChainListenerConfig):
         """Test integration with AdapterRegistry."""

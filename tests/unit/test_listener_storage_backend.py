@@ -44,7 +44,7 @@ def sample_config() -> ChainListenerConfig:
 
 
 def test_set_storage_backend_updates_state_manager(sample_config: ChainListenerConfig) -> None:
-    """set_storage_backend should replace state manager and sync event processor."""
+    """set_storage_backend should replace state manager."""
     with patch("chain_listener.core.listener.adapter_registry") as mock_registry:
         mock_registry.register_adapter = Mock()
         listener = ChainListener(sample_config)
@@ -57,7 +57,6 @@ def test_set_storage_backend_updates_state_manager(sample_config: ChainListenerC
     assert listener._state_manager is not old_state_manager
     assert listener._state_manager._storage is new_backend
     assert listener._event_processor is not None
-    assert listener._event_processor._state_manager is listener._state_manager
 
 
 def test_set_storage_backend_while_listening_raises_error(

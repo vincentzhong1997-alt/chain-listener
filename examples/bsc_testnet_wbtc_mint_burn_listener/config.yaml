@@ -21,9 +21,9 @@ chains:
     contracts:
       - name: "WBTC"
         address: "0xdF999D14C32655235A6606E41c7A77E627F23bcd"
-        abi_path: "examples/bsc_testnet_wbtc_mint_burn_listener/wbtc_mint_burn_abi.json"
+        abi_path: "wbtc_mint_burn_abi.json"
         events: ["Mint", "Burn"]
       - name: "WBTCFactory"
         address: "0xb17882f05C69308dEb2A41B567d5234Dc042E674"
-        abi_path: "examples/bsc_testnet_wbtc_mint_burn_listener/wbtc_factory_mint_events_abi.json"
+        abi_path: "wbtc_factory_mint_events_abi.json"
         events: ["MintRequestAdd", "MintConfirmed", "MintRejected"]

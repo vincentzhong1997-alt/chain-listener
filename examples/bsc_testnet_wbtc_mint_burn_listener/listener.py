@@ -1,4 +1,4 @@
-"""Listen for WBTC Mint/Burn events on BSC testnet."""
+"""Listen for WBTC Mint/Burn events on BSC testnet with config-driven SDK setup."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ async def on_wbtc_event(event: DecodedEvent) -> None:
 
 
 def _get_config_path() -> Path:
-    """Return config file path for this example."""
+    """Get config file path from env or default path in current directory."""
     config_path = os.environ.get("BSC_TESTNET_LISTENER_CONFIG")
     if config_path:
         return Path(config_path).expanduser()
@@ -51,7 +51,7 @@ def _get_config_path() -> Path:
 
 
 def _register_callbacks_from_config(listener: ChainListener, chain_name: str) -> None:
-    """Register callbacks for all contracts/events defined in config."""
+    """Register callbacks for all configured contracts/events on target chain."""
     chain_config = listener.config.chains.get(chain_name)
     if chain_config is None:
         raise ValueError(f"Chain '{chain_name}' not found in config")
@@ -67,14 +67,14 @@ def _register_callbacks_from_config(listener: ChainListener, chain_name: str) ->
 
 
 async def main() -> None:
-    """Start listener and stream configured events."""
+    """Start listener and stream configured events with config file."""
     logging.basicConfig(level=logging.INFO)
 
     config_path = _get_config_path()
     listener = ChainListener.from_config_file(str(config_path))
     _register_callbacks_from_config(listener, DEFAULT_CHAIN_NAME)
 
-    print("Listening for events from config file...")
+    print("Listening for WBTC Mint/Burn events from config file...")
     print(f"Config: {config_path}")
     print(
         "Set BSC_TESTNET_LISTENER_CONFIG to use another config file.\n"

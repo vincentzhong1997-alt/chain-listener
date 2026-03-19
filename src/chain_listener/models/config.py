@@ -5,7 +5,7 @@ and validation. Configuration follows a hierarchical structure with sensible
 defaults and comprehensive validation.
 """
 
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Annotated, Any
 from pydantic import (
     BaseModel,
     Field,
@@ -130,6 +130,7 @@ class ChainConfig(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     enabled: bool = Field(default=True, description="Enable this blockchain")
+    # TODO - consider using an Enum for chain_type
     chain_type: str = Field(
         ...,
         description=(
@@ -146,8 +147,8 @@ class ChainConfig(BaseModel):
     )
     confirmation_blocks: int = Field(default=12, ge=0, le=100, description="Number of confirmation blocks")
     polling_interval: int = Field(default=1000, ge=100, le=60000, description="Polling interval in milliseconds")
-    rpc: RPCConfig = Field(..., description="RPC configuration for connection management")
-    contracts: List[ContractConfig] = Field(default_factory=list, description="Smart contracts to monitor")
+    rpc: Annotated[RPCConfig, Field(..., description="RPC configuration for connection management")]
+    contracts: Annotated[List[ContractConfig], Field(default_factory=list, description="Smart contracts to monitor")]
 
 
 class RetryConfig(BaseModel):

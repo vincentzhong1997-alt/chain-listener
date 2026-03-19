@@ -1,18 +1,16 @@
 """Event processor for handling blockchain events.
 
 This module provides the core event processing functionality,
-including event decoding, callback execution, and state management.
+including event decoding and callback execution.
 """
 
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass
-from ..models.events import RawEvent, DecodedEvent, ChainType
+from ..models.events import RawEvent, DecodedEvent
 from ..models.config import ChainListenerConfig
-from ..exceptions import EventProcessingError
 from .callback_registry import CallbackRegistry
-from .state_manager import StateManager
 
 if TYPE_CHECKING:
     from .adapter_registry import AdapterRegistry
@@ -30,21 +28,11 @@ class ProcessResult:
     callback_result: Optional[Any] = None
 
 
-@dataclass
-class ReorgInfo:
-    """Information about a blockchain reorganization."""
-    detected_at: int
-    old_block_hash: str
-    new_block_hash: str
-    block_number: int
-    depth: int
-
-
 class EventProcessor:
     """Processor for handling blockchain events.
 
-    This class handles the decoding of raw events, execution of callbacks,
-    and management of event processing state.
+    This class handles decoding of raw events, callback execution,
+    and in-memory deduplication.
     """
 
     def __init__(
@@ -52,20 +40,18 @@ class EventProcessor:
         config: ChainListenerConfig,
         callback_registry: CallbackRegistry,
         adapter_registry: 'AdapterRegistry',
-        state_manager: StateManager,
     ) -> None:
         """Initialize the event processor.
 
         Args:
             config: The chain listener configuration
             callback_registry: The callback registry for event callbacks
+            adapter_registry: Registry used to resolve adapter per chain type
         """
         self.config = config
         self.callback_registry = callback_registry
         self._adapter_registry = adapter_registry
-        self._state_manager = state_manager
         self._processed_events: Dict[str, int] = {}  # Cache for deduplication
-        self._reorg_detection: Dict[ChainType, Dict[int, str]] = {}  # Block hash cache
 
         logger.info("EventProcessor initialized")
 
@@ -151,17 +137,6 @@ class EventProcessor:
             # Mark event as processed
             self._processed_events[event_hash] = event.timestamp
 
-            # Persist chain progress for recovery
-            try:
-                await self._state_manager.record_block_state(
-                    chain_type=event.chain_type,
-                    block_number=event.block_number,
-                    block_hash=event.block_hash,
-                    processed_at=event.timestamp or None,
-                )
-            except Exception as state_error:
-                logger.warning(f"Failed to persist block state: {state_error}")
-
             # Cleanup old events from cache (prevent memory leak)
             await self._cleanup_old_events()
 
@@ -210,72 +185,6 @@ class EventProcessor:
 
             logger.debug(f"Cleaned up {cutoff} old events from cache")
 
-    async def detect_reorg(self, chain_type: ChainType) -> Optional[ReorgInfo]:
-        """Detect if a blockchain reorganization has occurred.
-
-        Args:
-            chain_type: The blockchain type to check
-
-        Returns:
-            Optional[ReorgInfo]: Information about the reorg, or None if none detected
-        """
-        try:
-            adapter = self._adapter_registry.get_adapter(chain_type)
-
-            if not hasattr(adapter, 'get_latest_block_number'):
-                return None
-
-            # Get current block info
-            if asyncio.iscoroutinefunction(adapter.get_latest_block_number):
-                latest_block = await adapter.get_latest_block_number()
-            else:
-                latest_block = adapter.get_latest_block_number()
-
-            if chain_type not in self._reorg_detection:
-                # Initialize block hash cache
-                self._reorg_detection[chain_type] = {}
-
-            # Check if we have a cached hash for this block
-            if latest_block in self._reorg_detection[chain_type]:
-                cached_hash = self._reorg_detection[chain_type][latest_block]
-
-                # Get current block hash
-                if hasattr(adapter, 'get_block_by_number'):
-                    if asyncio.iscoroutinefunction(adapter.get_block_by_number):
-                        current_block = await adapter.get_block_by_number(latest_block)
-                    else:
-                        current_block = adapter.get_block_by_number(latest_block)
-
-                    current_hash = current_block.get('hash', '') if current_block else ''
-
-                    if current_hash and current_hash != cached_hash:
-                        # Reorg detected
-                        reorg_info = ReorgInfo(
-                            detected_at=latest_block,
-                            old_block_hash=cached_hash,
-                            new_block_hash=current_hash,
-                            block_number=latest_block,
-                            depth=1  # TODO: Calculate actual reorg depth
-                        )
-
-                        logger.warning(f"Blockchain reorg detected for {chain_type}: {reorg_info}")
-                        return reorg_info
-
-            # Update cache with current block hash
-            if hasattr(adapter, 'get_block_by_number'):
-                if asyncio.iscoroutinefunction(adapter.get_block_by_number):
-                    current_block = await adapter.get_block_by_number(latest_block)
-                else:
-                    current_block = adapter.get_block_by_number(latest_block)
-
-                if current_block and 'hash' in current_block:
-                    self._reorg_detection[chain_type][latest_block] = current_block['hash']
-
-        except Exception as e:
-            logger.error(f"Error detecting reorg for {chain_type}: {e}")
-
-        return None
-
     def is_event_processed(self, event_hash: str) -> bool:
         """Check if an event has been processed.
 
@@ -301,7 +210,6 @@ class EventProcessor:
         This is primarily used for testing and reinitialization.
         """
         self._processed_events.clear()
-        self._reorg_detection.clear()
         logger.info("Cleared event processor cache")
 
     def get_stats(self) -> Dict[str, Any]:
@@ -312,10 +220,6 @@ class EventProcessor:
         """
         return {
             "processed_events_cache_size": len(self._processed_events),
-            "reorg_cache_entries": {
-                str(chain_type): len(block_hashes)
-                for chain_type, block_hashes in self._reorg_detection.items()
-            },
             "max_concurrent_processing": self.config.global_config.max_concurrent_processing,
             "event_batch_size": self.config.global_config.event_batch_size
         }

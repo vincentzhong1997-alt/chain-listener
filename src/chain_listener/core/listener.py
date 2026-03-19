@@ -56,7 +56,7 @@ class ChainListener:
             key_prefix=self.config.storage.key_prefix,
         )
 
-        # Validate configuration
+        # TODO if this is needed since we already validate in config parsing - consider moving all validation to ChainListenerConfig's validation and keep this class focused on orchestration
         self._validate_config()
 
         # Initialize adapters
@@ -67,7 +67,6 @@ class ChainListener:
             config=self.config,
             callback_registry=self._callback_registry,
             adapter_registry=self._adapter_registry,
-            state_manager=self._state_manager,
         )
 
         logger.info(f"ChainListener initialized with {len(config.chains)} chains")
@@ -102,7 +101,7 @@ class ChainListener:
 
         # Validate each chain configuration
         for chain_name, chain_config in self.config.chains.items():
-            if not chain_config.rpc.urls:
+            if not chain_config.rpc.urls and not chain_config.rpc.endpoints:
                 raise ChainListenerError(f"No RPC URLs configured for chain: {chain_name}")
 
             if not chain_config.chain_type:
@@ -128,9 +127,6 @@ class ChainListener:
             storage_backend=storage_backend,
             key_prefix=self.config.storage.key_prefix,
         )
-
-        if self._event_processor is not None:
-            self._event_processor._state_manager = self._state_manager
 
         logger.info("Storage backend has been updated")
 
@@ -182,6 +178,7 @@ class ChainListener:
             header_name = ep.get("api_key_header")
             if not api_key:
                 continue
+            # TODO if it have no need for tron to have specific logic
             if not header_name and chain_config.chain_type == "tron":
                 header_name = "TRON-PRO-API-KEY"
             if header_name:
@@ -189,7 +186,7 @@ class ChainListener:
 
         adapter_config = {
             "name": f"{chain_config.chain_type}_adapter",
-            "network": "mainnet",
+            "network": chain_config.network,
             "chain_type": chain_config.chain_type,
             "rpc": {
                 "endpoints": chain_config.rpc.endpoints,
@@ -378,14 +375,20 @@ class ChainListener:
                     logger.debug(f"{chain_name} try get latest block")
                     # Get latest block
                     latest_block = await self._get_latest_block(adapter)
+                    commit_target = max(latest_block - 1, 0)
 
-                    if latest_block > last_block:
-                        logger.debug(f"{chain_name} found new block {latest_block}")
+                    if commit_target > last_block:
+                        logger.debug(
+                            "%s found new block %s, commit target %s",
+                            chain_name,
+                            latest_block,
+                            commit_target,
+                        )
 
                         batch_size = self._get_block_batch_size(chain_type, chain_config)
-                        while last_block < latest_block:
+                        while last_block < commit_target:
                             start_block = last_block + 1
-                            end_block = min(start_block + batch_size - 1, latest_block)
+                            end_block = min(start_block + batch_size - 1, commit_target)
 
                             events = await self._get_events_from_chain(
                                 adapter, chain_type, start_block, end_block
@@ -394,6 +397,12 @@ class ChainListener:
                             if events:
                                 # Process events
                                 results = await self._event_processor.process_events(events)
+                                failed_results = [result for result in results if not result.success]
+                                if failed_results:
+                                    raise ChainListenerError(
+                                        f"Failed to process {len(failed_results)} events "
+                                        f"for {chain_name} (blocks {start_block}-{end_block})"
+                                    )
 
                                 # Log processing results
                                 success_count = sum(1 for r in results if r.success)
@@ -402,6 +411,10 @@ class ChainListener:
                                         f"Processed {success_count} events from {chain_name} (blocks {start_block}-{end_block})"
                                     )
 
+                            await self._state_manager.record_block_state(
+                                chain_type=chain_type,
+                                block_number=end_block,
+                            )
                             last_block = end_block
 
                             # Wait before next poll

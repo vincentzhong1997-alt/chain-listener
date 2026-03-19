@@ -28,14 +28,12 @@ class StateManager:
         self,
         chain_type: ChainType,
         block_number: int,
-        block_hash: str,
         processed_at: Optional[int] = None,
     ) -> BlockState:
         """Persist the latest processed block information for a chain."""
         state = BlockState(
             chain_type=chain_type,
             block_number=block_number,
-            block_hash=block_hash,
             processed_at=processed_at or int(time.time()),
         )
         await self._storage.save(self._build_key(chain_type), state.to_dict())

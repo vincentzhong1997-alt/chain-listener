@@ -3,14 +3,11 @@
 import pytest
 import asyncio
 from unittest.mock import Mock, AsyncMock, patch
-from typing import Dict, Any, List
 
-from chain_listener.core.event_processor import EventProcessor, ProcessResult, ReorgInfo
+from chain_listener.core.event_processor import EventProcessor, ProcessResult
 from chain_listener.core.callback_registry import CallbackRegistry
-from chain_listener.core.state_manager import StateManager
 from chain_listener.models.events import RawEvent, DecodedEvent, ChainType
 from chain_listener.models.config import ChainListenerConfig, GlobalConfig, ChainConfig
-from chain_listener.exceptions import EventProcessingError
 
 
 @pytest.fixture
@@ -68,20 +65,13 @@ def mock_raw_event():
 
 
 @pytest.fixture
-def state_manager():
-    """Create a state manager with in-memory backend."""
-    return StateManager()
-
-
-@pytest.fixture
-def processor(mock_config, mock_callback_registry, state_manager):
+def processor(mock_config, mock_callback_registry):
     """Create an event processor instance for testing."""
     adapter_registry = Mock()
     processor = EventProcessor(
         mock_config,
         mock_callback_registry,
         adapter_registry,
-        state_manager,
     )
     # Expose mock for convenience in tests
     processor._adapter_registry = adapter_registry
@@ -127,26 +117,6 @@ class TestProcessResult:
         assert result.callback_result is None
 
 
-class TestReorgInfo:
-    """Test cases for ReorgInfo dataclass."""
-
-    def test_reorg_info_creation(self):
-        """Test creating ReorgInfo with all fields."""
-        reorg_info = ReorgInfo(
-            detected_at=12345,
-            old_block_hash="0x1234567890123456789012345678901234567890",
-            new_block_hash="0xabcdef1234567890abcdef1234567890abcdef12",
-            block_number=12345,
-            depth=5
-        )
-
-        assert reorg_info.detected_at == 12345
-        assert reorg_info.old_block_hash == "0x1234567890123456789012345678901234567890"
-        assert reorg_info.new_block_hash == "0xabcdef1234567890abcdef1234567890abcdef12"
-        assert reorg_info.block_number == 12345
-        assert reorg_info.depth == 5
-
-
 class TestEventProcessor:
     """Test cases for EventProcessor class."""
 
@@ -155,7 +125,6 @@ class TestEventProcessor:
         assert processor.config == mock_config
         assert processor.callback_registry == mock_callback_registry
         assert processor._processed_events == {}
-        assert processor._reorg_detection == {}
 
     def test_compute_event_hash(self, processor, mock_raw_event):
         """Test event hash computation."""
@@ -210,24 +179,20 @@ class TestEventProcessor:
         """Test clearing processor cache."""
         # Add some data
         processor._processed_events["hash1"] = 1640995200
-        processor._reorg_detection[ChainType.ETHEREUM] = {12345: "0x123456"}
 
         # Clear cache
         processor.clear_cache()
 
         assert processor._processed_events == {}
-        assert processor._reorg_detection == {}
 
     def test_get_stats(self, processor, mock_config):
         """Test getting processor statistics."""
         # Add some data
         processor._processed_events["hash1"] = 1640995200
-        processor._reorg_detection[ChainType.ETHEREUM] = {12345: "0x123456", 12346: "0xabcdef"}
 
         stats = processor.get_stats()
 
         assert stats["processed_events_cache_size"] == 1
-        assert stats["reorg_cache_entries"]["ChainType.ETHEREUM"] == 2
         assert stats["max_concurrent_processing"] == mock_config.global_config.max_concurrent_processing
         assert stats["event_batch_size"] == mock_config.global_config.event_batch_size
 
@@ -417,98 +382,9 @@ class TestEventProcessor:
         assert len(processor._processed_events) < original_count
         assert len(processor._processed_events) == (threshold + 10) // 2
 
-    @pytest.mark.asyncio
-    async def test_detect_reorg_no_support(self, processor):
-        """Test reorg detection when adapter doesn't support it."""
-        mock_adapter = Mock()
-        # Remove get_latest_block_number attribute
-        del mock_adapter.get_latest_block_number
-        processor._adapter_registry.get_adapter.return_value = mock_adapter
-
-        result = await processor.detect_reorg(ChainType.ETHEREUM)
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_detect_reorg_initialization(self, processor):
-        """Test reorg detection initialization."""
-        mock_adapter = Mock()
-        mock_adapter.get_latest_block_number.return_value = 12345
-        mock_adapter.get_block_by_number.return_value = {"hash": "0x1234567890"}
-        processor._adapter_registry.get_adapter.return_value = mock_adapter
-
-        result = await processor.detect_reorg(ChainType.ETHEREUM)
-
-        assert result is None
-        assert ChainType.ETHEREUM in processor._reorg_detection
-        assert 12345 in processor._reorg_detection[ChainType.ETHEREUM]
-        assert processor._reorg_detection[ChainType.ETHEREUM][12345] == "0x1234567890"
-
-    @pytest.mark.asyncio
-    async def test_detect_reorg_detection(self, processor):
-        """Test successful reorg detection."""
-        # Initialize cache with different hash
-        processor._reorg_detection[ChainType.ETHEREUM] = {12345: "0xoldhash"}
-
-        mock_adapter = Mock()
-        mock_adapter.get_latest_block_number.return_value = 12345
-        mock_adapter.get_block_by_number.return_value = {"hash": "0xnewhash"}
-        processor._adapter_registry.get_adapter.return_value = mock_adapter
-
-        result = await processor.detect_reorg(ChainType.ETHEREUM)
-
-        assert result is not None
-        assert isinstance(result, ReorgInfo)
-        assert result.block_number == 12345
-        assert result.old_block_hash == "0xoldhash"
-        assert result.new_block_hash == "0xnewhash"
-        assert result.detected_at == 12345
-
-    @pytest.mark.asyncio
-    async def test_detect_reorg_async_methods(self, processor):
-        """Test reorg detection with async adapter methods."""
-        mock_adapter = Mock()
-        mock_adapter.get_latest_block_number = AsyncMock(return_value=12345)
-        mock_adapter.get_block_by_number = AsyncMock(return_value={"hash": "0x1234567890"})
-        processor._adapter_registry.get_adapter.return_value = mock_adapter
-
-        result = await processor.detect_reorg(ChainType.ETHEREUM)
-
-        assert result is None
-        mock_adapter.get_latest_block_number.assert_awaited_once()
-        mock_adapter.get_block_by_number.assert_awaited_once_with(12345)
-
-    @pytest.mark.asyncio
-    async def test_detect_reorg_error_handling(self, processor):
-        """Test error handling in reorg detection."""
-        processor._adapter_registry.get_adapter.side_effect = Exception("Adapter error")
-
-        result = await processor.detect_reorg(ChainType.ETHEREUM)
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_detect_reorg_no_block_hash(self, processor):
-        """Test reorg detection when block hash is not available."""
-        mock_adapter = Mock()
-        mock_adapter.get_latest_block_number.return_value = 12345
-        mock_adapter.get_block_by_number.return_value = None  # No block data
-        processor._adapter_registry.get_adapter.return_value = mock_adapter
-
-        result = await processor.detect_reorg(ChainType.ETHEREUM)
-
-        assert result is None
-
     def test_process_result_dataclass_structure(self):
         """Test ProcessResult dataclass structure."""
         # Test that all expected fields exist
         fields = ProcessResult.__dataclass_fields__
         expected_fields = {'success', 'event', 'decoded_event', 'error', 'callback_result'}
-        assert set(fields.keys()) == expected_fields
-
-    def test_reorg_info_dataclass_structure(self):
-        """Test ReorgInfo dataclass structure."""
-        # Test that all expected fields exist
-        fields = ReorgInfo.__dataclass_fields__
-        expected_fields = {'detected_at', 'old_block_hash', 'new_block_hash', 'block_number', 'depth'}
         assert set(fields.keys()) == expected_fields
