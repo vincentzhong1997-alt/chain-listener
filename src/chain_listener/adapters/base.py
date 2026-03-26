@@ -244,6 +244,15 @@ class BaseAdapter(ABC):
     specific blockchain adapters must implement.
     """
 
+    _SENSITIVE_HEADER_KEYS = {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "api-key",
+        "apikey",
+        "tron-pro-api-key",
+    }
+
     def __init__(self, config: Dict[str, Any]):
         """Initialize adapter with configuration.
 
@@ -438,48 +447,53 @@ class BaseAdapter(ABC):
             except Exception:
                 response_headers = None
 
+        raw_error_msg = str(error)
+        sanitized_error_msg = self._redact_text(raw_error_msg)
         logger.error(
             "Blockchain adapter '%s' (%s) operation failed: %s (status=%s)",
             getattr(self, "name", "unknown"),
             getattr(self, "network", "unknown"),
-            error,
+            sanitized_error_msg,
             response_status,
-            exc_info=error,
         )
 
         if response_text:
-            logger.error("RPC response body: %s", response_text)
+            logger.error("RPC response body: %s", self._redact_text(response_text))
         if response_headers:
-            logger.debug("RPC response headers: %s", response_headers)
+            logger.debug(
+                "RPC response headers: %s",
+                self._redact_headers(response_headers),
+            )
 
         if isinstance(error, BlockchainAdapterError):
             raise error
 
         # Convert common error types
-        error_msg = str(error)
+        error_msg = raw_error_msg
+        safe_error_msg = self._redact_text(error_msg)
         if self._is_rate_limit_error(error):
             raise RateLimitError(
-                f"Rate limit exceeded: {error_msg}",
+                f"Rate limit exceeded: {safe_error_msg}",
                 blockchain=self.name,
                 network=self.network,
                 limit=self._requests_per_second,
                 retry_after=self._extract_retry_after_seconds(error) or 1.0,
-                details={"original_error": error_msg},
+                details={"original_error": safe_error_msg},
             )
         if "timeout" in error_msg.lower():
             raise ChainConnectionError(
-                f"Blockchain request timeout: {error_msg}",
+                f"Blockchain request timeout: {safe_error_msg}",
                 blockchain=self.name,
                 network=self.network,
                 timeout=self.rpc_config.get("timeout"),
-                details={"original_error": error_msg}
+                details={"original_error": safe_error_msg}
             )
         else:
             raise BlockchainAdapterError(
-                f"Blockchain operation failed: {error_msg}",
+                f"Blockchain operation failed: {safe_error_msg}",
                 blockchain=self.name,
                 network=self.network,
-                details={"original_error": error_msg}
+                details={"original_error": safe_error_msg}
             )
 
     def _extract_retry_after_seconds(self, error: Exception) -> Optional[float]:
@@ -546,6 +560,42 @@ class BaseAdapter(ABC):
         )
         return any(marker in error_msg for marker in rate_limit_markers)
 
+    def _redact_text(self, text: Any) -> str:
+        """Redact likely credential values from text before logging."""
+        value = str(text)
+        patterns = [
+            (
+                re.compile(
+                    r"(?i)(api[_-]?key|token|secret|password)"
+                    r"(\s*[:=]\s*|=)([^&\\s,;]+)"
+                ),
+                r"\1\2***REDACTED***",
+            ),
+            (
+                re.compile(r"(?i)(authorization\s*[:=]\s*)(bearer\s+)?([^\s,;]+)"),
+                r"\1\2***REDACTED***",
+            ),
+            (
+                re.compile(
+                    r"(?i)([?&](?:api[_-]?key|token|secret|password)=)([^&\\s]+)"
+                ),
+                r"\1***REDACTED***",
+            ),
+        ]
+        for pattern, replacement in patterns:
+            value = pattern.sub(replacement, value)
+        return value
+
+    def _redact_headers(self, headers: Dict[str, Any]) -> Dict[str, Any]:
+        """Redact sensitive header values before logging."""
+        sanitized: Dict[str, Any] = {}
+        for key, value in headers.items():
+            if str(key).lower() in self._SENSITIVE_HEADER_KEYS:
+                sanitized[key] = "***REDACTED***"
+            else:
+                sanitized[key] = self._redact_text(value)
+        return sanitized
+
     def _load_contract_abi(self, abi_path: Optional[str]) -> Optional[Any]:
         """Load and cache contract ABI definitions from disk.
 
@@ -572,9 +622,9 @@ class BaseAdapter(ABC):
         # Resolve path for cache key (non-strict keeps original behaviour for missing files)
         try:
             path = path.resolve()
-        except Exception:
+        except Exception as exc:
             # If resolution fails we still attempt to read using the constructed path
-            pass
+            logger.debug("Unable to resolve ABI path '%s': %s", path, exc)
 
         cache_key = str(path)
         if cache_key in self._abi_cache:
@@ -681,8 +731,4 @@ class BaseAdapter(ABC):
                         result = await result
                 return result
             except Exception as e:
-                
                 self._handle_blockchain_error(e)
-
-
-    

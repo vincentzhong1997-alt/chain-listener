@@ -783,6 +783,118 @@ class TestEthereumAdapter:
                 event_filters={checksum_address: ["Approval"]},
             )
 
+    @pytest.mark.asyncio
+    async def test_get_logs_fallbacks_to_raw_rpc_when_formatter_fails(self):
+        """Formatter errors should fallback to raw eth_getLogs response."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        config = {
+            "name": "ethereum",
+            "network": "mainnet",
+            "rpc": {"urls": ["https://eth.llamarpc.com"]},
+        }
+        adapter = EthereumAdapter(config)
+
+        class DummyEth:
+            def get_logs(self_inner, _params):
+                raise ValueError(
+                    "The provided value did not satisfy any of the formatter conditions"
+                )
+
+        class DummyProvider:
+            def make_request(self_inner, method, params):
+                assert method == "eth_getLogs"
+                assert isinstance(params, list)
+                return {"jsonrpc": "2.0", "id": 1, "result": None}
+
+        dummy_w3 = type(
+            "DummyWeb3",
+            (),
+            {"eth": DummyEth(), "provider": DummyProvider()},
+        )()
+
+        async def fake_execute(operation, *args, **kwargs):
+            return operation(dummy_w3)
+
+        adapter._execute_with_client = fake_execute  # type: ignore[assignment]
+
+        logs = await adapter.get_logs(
+            address="0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+            from_block=1,
+            to_block=2,
+        )
+
+        assert logs == []
+
+    @pytest.mark.asyncio
+    async def test_get_logs_fallback_normalizes_raw_rpc_log_entry(self):
+        """Fallback should normalize raw RPC log entries into standard format."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        config = {
+            "name": "ethereum",
+            "network": "mainnet",
+            "rpc": {"urls": ["https://eth.llamarpc.com"]},
+        }
+        adapter = EthereumAdapter(config)
+
+        class DummyEth:
+            def get_logs(self_inner, _params):
+                raise ValueError(
+                    "The provided value did not satisfy any of the formatter conditions"
+                )
+
+        class DummyProvider:
+            def make_request(self_inner, method, params):
+                assert method == "eth_getLogs"
+                return {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": [
+                        {
+                            "address": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+                            "topics": [
+                                "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+                            ],
+                            "data": "0x",
+                            "blockNumber": "0x5cc6576",
+                            "blockHash": (
+                                "0x6b75f11f9eec76931a16aed4bd638b9af1bf6f901f84a1546fb8f5f2f7288f54"
+                            ),
+                            "transactionHash": (
+                                "0x978c7bba749476934edf9106433246d00643252af750778e522c692267ac9c24"
+                            ),
+                            "transactionIndex": "0x0",
+                            "logIndex": "0x0",
+                            "removed": False,
+                        }
+                    ],
+                }
+
+        dummy_w3 = type(
+            "DummyWeb3",
+            (),
+            {"eth": DummyEth(), "provider": DummyProvider()},
+        )()
+
+        async def fake_execute(operation, *args, **kwargs):
+            return operation(dummy_w3)
+
+        adapter._execute_with_client = fake_execute  # type: ignore[assignment]
+
+        logs = await adapter.get_logs(
+            address="0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+            from_block=97349382,
+            to_block=97349382,
+        )
+
+        assert len(logs) == 1
+        log = logs[0]
+        assert log["address"] == "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599"
+        assert log["block_number"] == int("0x5cc6576", 16)
+        assert log["log_index"] == 0
+        assert log["transaction_index"] == 0
+
     def test_decode_event_with_loaded_abi(self, tmp_path):
         """Ensure ABI files are loaded and used for decoding."""
         from chain_listener.adapters.ethereum import EthereumAdapter
@@ -848,3 +960,89 @@ class TestEthereumAdapter:
         assert decoded.parameters["value"] == 1000
         assert decoded.parameters["from"].lower() == from_address.lower()
         assert decoded.parameters["to"].lower() == to_address.lower()
+
+    def test_decode_event_with_unpadded_dynamic_string_data(self, tmp_path):
+        """Decode should tolerate provider logs missing right-side ABI padding."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        abi_path = tmp_path / "factory.json"
+        abi_definition = [
+            {
+                "anonymous": False,
+                "inputs": [
+                    {
+                        "indexed": True,
+                        "internalType": "address",
+                        "name": "merchant",
+                        "type": "address",
+                    },
+                    {
+                        "indexed": True,
+                        "internalType": "address",
+                        "name": "sender",
+                        "type": "address",
+                    },
+                    {
+                        "indexed": False,
+                        "internalType": "string",
+                        "name": "btcDepositAddress",
+                        "type": "string",
+                    },
+                ],
+                "name": "CustodianBtcDepositAddressSet",
+                "type": "event",
+            }
+        ]
+        abi_path.write_text(json.dumps(abi_definition))
+
+        contract_address = "0xb17882f05c69308deb2a41b567d5234dc042e674"
+        config = {
+            "name": "bsc",
+            "network": "testnet",
+            "rpc": {"urls": ["https://bsc-testnet.publicnode.com"]},
+            "contracts": [
+                {
+                    "name": "WBTCFactory",
+                    "address": contract_address,
+                    "abi_path": str(abi_path),
+                    "events": ["CustodianBtcDepositAddressSet"],
+                }
+            ],
+        }
+        adapter = EthereumAdapter(config)
+
+        raw_event = RawEvent(
+            chain_type=ChainType.BSC,
+            block_number=96179948,
+            block_hash="0x" + "00" * 32,
+            transaction_hash="0x" + "11" * 32,
+            log_index=0,
+            contract_address=contract_address,
+            raw_data={
+                "topics": [
+                    "0xa1cea79438a06b74491693be087a2035e62acbe738749fc0ba7fc87df2eed939",
+                    "0x0000000000000000000000006d10a9fb108e568ec79d7bb564fd66bf43acf989",
+                    "0x00000000000000000000000087b4dfc09b1258ad494cb0de92c64b4ec1a072dc",
+                ],
+                # 24-byte utf-8 payload without right-side 32-byte padding.
+                "data": (
+                    "0x0000000000000000000000000000000000000000000000000000000000000020"
+                    "0000000000000000000000000000000000000000000000000000000000000018"
+                    "746231716578616d706c65637573746f6469616e61646472"
+                ),
+            },
+            timestamp=1700000000,
+        )
+
+        decoded = adapter.decode_event(raw_event)
+
+        assert decoded.event_name == "CustodianBtcDepositAddressSet"
+        assert (
+            decoded.parameters["merchant"].lower()
+            == "0x6d10a9fb108e568ec79d7bb564fd66bf43acf989"
+        )
+        assert (
+            decoded.parameters["sender"].lower()
+            == "0x87b4dfc09b1258ad494cb0de92c64b4ec1a072dc"
+        )
+        assert decoded.parameters["btcDepositAddress"] == "tb1qexamplecustodianaddr"

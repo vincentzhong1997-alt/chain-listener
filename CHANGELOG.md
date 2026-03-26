@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-03-25
+
+### 🐛 Bug Fixes
+- **Ethereum adapter log warning**: refine formatter-fallback warning output in
+  `EthereumAdapter` to improve diagnostics during `eth_getLogs` fallback flow.
+
+## [0.2.4] - 2026-03-24
+
+### 🐛 Bug Fixes
+- **eth_getLogs formatter resilience**: add fallback to raw JSON-RPC response when
+  Web3 formatter raises `The provided value did not satisfy any of the formatter
+  conditions`.
+- **RPC response compatibility**: treat `eth_getLogs` `result: null` as empty logs
+  and normalize raw response log fields to the internal standard format.
+
+### 🧪 Tests
+- Add unit tests covering formatter-failure fallback and raw RPC log normalization.
+
+## [0.2.3] - 2026-03-23
+
+### 🐛 Bug Fixes
+- **Ethereum ABI decode fallback**: Add right-padding retry for malformed RPC log
+  `data` payloads that are not 32-byte aligned.
+- **Address set event compatibility**: Fix decoding of events with dynamic string
+  parameters (for example `CustodianBtcDepositAddressSet`) when providers omit
+  trailing ABI padding bytes.
+
+### 🧪 Tests
+- Add unit test coverage for decoding unpadded dynamic-string event log data.
+
 ## [0.2.0] - 2024-12-12
 
 ### 🚀 Major Features

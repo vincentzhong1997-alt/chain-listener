@@ -26,7 +26,7 @@ CHAIN_SETUPS = {
             {
                 "url": os.environ.get(
                     "ETHEREUM_RPC_URL",
-                    "https://eth-mainnet.g.alchemy.com/v2/8kg5BVMw4kdwNLo0bMkA6",
+                    "https://eth.llamarpc.com",
                 ),
                 "api_key": os.environ.get("ETHEREUM_API_KEY"),
                 "api_key_header": os.environ.get("ETH_API_KEY_HEADER"),
@@ -44,7 +44,7 @@ CHAIN_SETUPS = {
         "endpoints": [
             {
                 "url": os.environ.get("TRON_RPC_URL", "https://api.trongrid.io"),
-                "api_key": os.environ.get("TRON_API_KEY", "d320f1de-30a2-4be7-a4b0-8151681e7bd9"),
+                "api_key": os.environ.get("TRON_API_KEY"),
                 "api_key_header": os.environ.get("TRON_API_KEY_HEADER", "TRON-PRO-API-KEY"),
             }
         ],
@@ -58,9 +58,9 @@ CHAIN_SETUPS = {
         "abi_path": SOL_ABI_PATH,
         "endpoints": [
             {
-                "url": os.environ.get("SOLANA_RPC_URL", "https://solana-mainnet.gateway.tatum.io"),
-                "api_key": "t-694ad531445c47886798c086-e30b86fa1dd2449594e7d6bc",
-                "api_key_header": "x-api-key",
+                "url": os.environ.get("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"),
+                "api_key": os.environ.get("SOLANA_API_KEY"),
+                "api_key_header": os.environ.get("SOLANA_API_KEY_HEADER", "x-api-key"),
             }
         ],
         "confirmation_blocks": 0,

@@ -77,8 +77,8 @@ class TronAdapter(BaseAdapter):
         for client in self._clients.values():
             try:
                 client.provider.sess.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.warning("Failed to close Tron client session cleanly: %s", exc)
         self._clients.clear()
 
     def is_connected(self) -> bool:

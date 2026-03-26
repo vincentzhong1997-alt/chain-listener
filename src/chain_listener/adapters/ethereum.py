@@ -81,6 +81,16 @@ class EthereumAdapter(BaseAdapter):
 
         self.logger = logging.getLogger(__name__)
         self._w3 = None
+        extra_padding = config.get("abi_extra_padding_bytes", 32)
+        try:
+            self._abi_extra_padding_bytes = max(0, int(extra_padding))
+        except (TypeError, ValueError):
+            self._abi_extra_padding_bytes = 32
+            self.logger.warning(
+                "Invalid abi_extra_padding_bytes '%s', using default=%s",
+                extra_padding,
+                self._abi_extra_padding_bytes,
+            )
 
         # ABI decoding helpers
         self._abi_codec = Web3().codec
@@ -276,7 +286,22 @@ class EthereumAdapter(BaseAdapter):
                 filter_params.get("topics"),
             )
 
-            return w3.eth.get_logs(filter_params)
+            try:
+                return w3.eth.get_logs(filter_params)
+            except ValueError as exc:
+                if not self._is_get_logs_formatter_error(exc):
+                    raise
+                self.logger.warning(
+                    (
+                        "eth_getLogs formatter failed, fallback to raw RPC response: "
+                        "address=%s from=%s to=%s warn=%s"
+                    ),
+                    filter_params.get("address"),
+                    filter_params.get("fromBlock"),
+                    filter_params.get("toBlock"),
+                    exc,
+                )
+                return self._fetch_logs_via_raw_rpc(w3, filter_params)
 
         logs = await self._execute_with_client(get_logs_operation)
         return [
@@ -344,17 +369,100 @@ class EthereumAdapter(BaseAdapter):
         Returns:
             Standardized log dictionary
         """
+        def _read(source: Any, *keys: str) -> Any:
+            for key in keys:
+                if isinstance(source, dict) and key in source:
+                    return source[key]
+                if hasattr(source, key):
+                    return getattr(source, key)
+            return None
+
+        def _to_hex(value: Any) -> Optional[str]:
+            if value is None:
+                return None
+            if isinstance(value, HexBytes):
+                return value.hex()
+            if isinstance(value, (bytes, bytearray)):
+                return HexBytes(value).hex()
+            if isinstance(value, str):
+                return value if value.startswith("0x") else f"0x{value}"
+            return str(value)
+
+        def _to_hex_or_default(value: Any, default: str = "0x") -> str:
+            encoded = _to_hex(value)
+            return encoded if encoded is not None else default
+
+        def _to_int(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                try:
+                    return int(value, 16) if value.startswith("0x") else int(value)
+                except ValueError:
+                    return None
+            return None
+
+        topics = _read(log, "topics") or []
+        normalized_topics = [_to_hex_or_default(topic) for topic in topics]
+
         return {
-            "address": log.address,
-            "topics": [topic.hex() for topic in log.topics],
-            "data": log.data.hex() if log.data else "0x",
-            "block_number": log.blockNumber,
-            "block_hash": log.blockHash.hex() if log.blockHash else None,
-            "transaction_hash": log.transactionHash.hex() if log.transactionHash else None,
-            "transaction_index": log.transactionIndex,
-            "log_index": log.logIndex,
-            "removed": log.removed
+            "address": _read(log, "address"),
+            "topics": normalized_topics,
+            "data": _to_hex_or_default(_read(log, "data")),
+            "block_number": _to_int(_read(log, "blockNumber", "block_number")),
+            "block_hash": _to_hex(_read(log, "blockHash", "block_hash")),
+            "transaction_hash": _to_hex(
+                _read(log, "transactionHash", "transaction_hash")
+            ),
+            "transaction_index": _to_int(
+                _read(log, "transactionIndex", "transaction_index")
+            ),
+            "log_index": _to_int(_read(log, "logIndex", "log_index")),
+            "removed": bool(_read(log, "removed")),
         }
+
+    @staticmethod
+    def _is_get_logs_formatter_error(error: ValueError) -> bool:
+        """Return whether get_logs failed due to unexpected formatter input."""
+        message = str(error).lower()
+        return "formatter conditions" in message
+
+    def _fetch_logs_via_raw_rpc(
+        self, w3: Web3, filter_params: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Fetch logs by raw JSON-RPC and normalize provider response."""
+        response = w3.provider.make_request("eth_getLogs", [filter_params])
+        rpc_error = response.get("error")
+        if rpc_error:
+            raise BlockchainAdapterError(
+                f"eth_getLogs RPC error: {rpc_error}",
+                blockchain=self.name,
+                network=self.network,
+                details={"filter_params": filter_params},
+            )
+
+        result = response.get("result")
+        if result is None:
+            return []
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            nested_logs = result.get("result")
+            if isinstance(nested_logs, list):
+                return nested_logs
+            logs = result.get("logs")
+            if isinstance(logs, list):
+                return logs
+        raise BlockchainAdapterError(
+            f"Unexpected eth_getLogs result type: {type(result)}",
+            blockchain=self.name,
+            network=self.network,
+            details={"result": result, "filter_params": filter_params},
+        )
 
     async def get_transaction(self, transaction_hash: str) -> Dict[str, Any]:
         """Get transaction information by hash from Ethereum.
@@ -638,32 +746,64 @@ class EthereumAdapter(BaseAdapter):
         if not event_abi:
             return None
 
+        transaction_index = raw_data.get(
+            "transaction_index",
+            raw_data.get("transactionIndex", 0),
+        )
+        log_data = self._normalize_log_data(raw_data.get("data", "0x"))
+        log_entry = self._build_log_entry(
+            normalized_address=normalized_address,
+            topics=topics,
+            log_data=log_data,
+            block_number=event.block_number,
+            log_index=event.log_index,
+            transaction_index=transaction_index,
+            transaction_hash=event.transaction_hash,
+            block_hash=event.block_hash,
+        )
         try:
-            transaction_index = raw_data.get("transaction_index", raw_data.get("transactionIndex", 0))
-            log_entry_dict = {
-                "address": normalized_address,
-                "topics": [self._as_hexbytes(topic) for topic in topics],
-                "data": raw_data.get("data", "0x"),
-                "blockNumber": event.block_number,
-                "logIndex": event.log_index,
-                "transactionIndex": transaction_index if transaction_index is not None else 0,
-            }
-
-            if event.transaction_hash:
-                log_entry_dict["transactionHash"] = self._as_hexbytes(event.transaction_hash)
-            if event.block_hash:
-                log_entry_dict["blockHash"] = self._as_hexbytes(event.block_hash)
-
-            log_entry = AttributeDict(log_entry_dict)
             decoded = get_event_data(self._abi_codec, event_abi, log_entry)
         except Exception as exc:
-            self.logger.debug(
-                "ABI decode failed for %s on %s: %s",
-                normalized_address,
-                event.transaction_hash,
-                exc,
-            )
-            return None
+            decode_errors: list[str] = [str(exc)]
+            for candidate_data, extra_bytes in self._iter_padded_log_data_candidates(
+                log_data
+            ):
+                padded_log_entry = self._build_log_entry(
+                    normalized_address=normalized_address,
+                    topics=topics,
+                    log_data=candidate_data,
+                    block_number=event.block_number,
+                    log_index=event.log_index,
+                    transaction_index=transaction_index,
+                    transaction_hash=event.transaction_hash,
+                    block_hash=event.block_hash,
+                )
+                try:
+                    decoded = get_event_data(
+                        self._abi_codec,
+                        event_abi,
+                        padded_log_entry,
+                    )
+                    self.logger.warning(
+                        (
+                            "ABI decode succeeded after right-padding data for "
+                            "contract=%s tx=%s extra_padding_bytes=%s"
+                        ),
+                        normalized_address,
+                        event.transaction_hash,
+                        extra_bytes,
+                    )
+                    break
+                except Exception as padded_exc:
+                    decode_errors.append(str(padded_exc))
+            else:
+                self.logger.debug(
+                    "ABI decode failed for %s on %s: %s",
+                    normalized_address,
+                    event.transaction_hash,
+                    " | ".join(decode_errors),
+                )
+                return None
 
         parameters = dict(decoded["args"])
         timestamp = raw_data.get("timestamp", event.timestamp)
@@ -679,6 +819,86 @@ class EthereumAdapter(BaseAdapter):
             log_index=event.log_index,
             timestamp=timestamp,
         )
+
+    def _build_log_entry(
+        self,
+        normalized_address: str,
+        topics: List[str],
+        log_data: str,
+        block_number: int,
+        log_index: int,
+        transaction_index: int,
+        transaction_hash: str,
+        block_hash: str,
+    ) -> AttributeDict:
+        """Build web3-compatible log entry object for event decode."""
+        log_entry_dict = {
+            "address": normalized_address,
+            "topics": [self._as_hexbytes(topic) for topic in topics],
+            "data": log_data,
+            "blockNumber": block_number,
+            "logIndex": log_index,
+            "transactionIndex": (
+                transaction_index if transaction_index is not None else 0
+            ),
+        }
+        if transaction_hash:
+            log_entry_dict["transactionHash"] = self._as_hexbytes(transaction_hash)
+        if block_hash:
+            log_entry_dict["blockHash"] = self._as_hexbytes(block_hash)
+        return AttributeDict(log_entry_dict)
+
+    @staticmethod
+    def _normalize_log_data(value: Any) -> str:
+        """Normalize log data as 0x-prefixed lowercase hex string."""
+        if isinstance(value, HexBytes):
+            return value.hex()
+        if isinstance(value, (bytes, bytearray)):
+            return HexBytes(value).hex()
+
+        text = str(value or "").strip().lower()
+        if not text:
+            return "0x"
+        if text.startswith("0x"):
+            return text
+        return f"0x{text}"
+
+    @staticmethod
+    def _pad_abi_data(log_data: str) -> str:
+        """Pad hex data to 32-byte boundary for ABI compatibility."""
+        normalized = log_data.strip().lower()
+        if not normalized.startswith("0x"):
+            normalized = f"0x{normalized}"
+
+        body = normalized[2:]
+        if not body:
+            return normalized
+        if len(body) % 2 != 0:
+            body = f"0{body}"
+        remainder = len(body) % 64
+        if remainder == 0:
+            return f"0x{body}"
+        return f"0x{body}{'0' * (64 - remainder)}"
+
+    def _iter_padded_log_data_candidates(
+        self,
+        log_data: str,
+    ) -> List[tuple[str, int]]:
+        """Generate progressively padded log-data candidates.
+
+        Args:
+            log_data: Original 0x-prefixed log data.
+
+        Returns:
+            Candidate list of ``(data, extra_padding_bytes)``.
+        """
+        padded_base = self._pad_abi_data(log_data)
+        candidates: List[tuple[str, int]] = []
+        if padded_base != log_data:
+            candidates.append((padded_base, 0))
+        for extra in range(1, self._abi_extra_padding_bytes + 1):
+            candidates.append((f"{padded_base}{'00' * extra}", extra))
+        return candidates
 
     def decode_event(self, event: RawEvent) -> DecodedEvent:
         """Decode a raw Ethereum event using available metadata."""

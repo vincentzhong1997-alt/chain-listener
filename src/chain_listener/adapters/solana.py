@@ -71,8 +71,8 @@ class SolanaAdapter(BaseAdapter):
                 close = getattr(client, "close", None)
                 if close:
                     await close()
-            except Exception:
-                continue
+            except Exception as exc:
+                self.logger.warning("Failed to close Solana client cleanly: %s", exc)
         self._clients.clear()
         self._connected = False
 
