@@ -372,10 +372,11 @@ class ChainListener:
 
             while self.is_listening:
                 try:
+                    confirmations = chain_config.confirmation_blocks if chain_config else 0
                     logger.debug(f"{chain_name} try get latest block")
                     # Get latest block
                     latest_block = await self._get_latest_block(adapter)
-                    commit_target = max(latest_block - 1, 0)
+                    commit_target = max(latest_block - confirmations, 0)
 
                     if commit_target > last_block:
                         logger.debug(
@@ -386,7 +387,7 @@ class ChainListener:
                         )
 
                         batch_size = self._get_block_batch_size(chain_type, chain_config)
-                        while last_block < commit_target:
+                        while commit_target > last_block:
                             start_block = last_block + 1
                             end_block = min(start_block + batch_size - 1, commit_target)
 
@@ -424,7 +425,7 @@ class ChainListener:
                         await asyncio.sleep(chain_config.polling_interval / 1000.0)
 
                 except Exception as e:
-                    logger.error(f"Error listening to {chain_name}: {e}")
+                    logger.error(f"Error listening to {chain_name}: {e}", exc_info=True)
                     await asyncio.sleep(5)  # Wait before retry
 
         except asyncio.CancelledError as e:
@@ -509,6 +510,8 @@ class ChainListener:
 
             # Convert logs to RawEvent objects
             for log in logs:
+                    logger.info(f"Retrieved log from {chain_type} - block: {log.get('block_number')}")
+                    block = await adapter.get_block_by_number(log.get('block_number', from_block))
                     event = RawEvent(
                         chain_type=adapter.chain_type,
                         block_number=log.get('block_number', from_block),
@@ -517,7 +520,7 @@ class ChainListener:
                         log_index=log.get('log_index', 0),
                         contract_address=log.get('address', ''),
                         raw_data=log,
-                        timestamp=log.get('timestamp', 0)
+                        timestamp=block.get('timestamp', 0) if block else 0
                     )
                     events.append(event)
 

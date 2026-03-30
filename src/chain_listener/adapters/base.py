@@ -455,6 +455,7 @@ class BaseAdapter(ABC):
             getattr(self, "network", "unknown"),
             sanitized_error_msg,
             response_status,
+            exc_info=True
         )
 
         if response_text:
@@ -732,3 +733,19 @@ class BaseAdapter(ABC):
                 return result
             except Exception as e:
                 self._handle_blockchain_error(e)
+
+    @abstractmethod
+    async def get_block_by_number(self, block_number: Union[int, str]) -> Dict[str, Any]:
+        """Get block data by block number.
+
+        Args:
+            block_number: Block number or 'latest'
+
+        Returns:
+            Block data as a dictionary
+
+        Raises:
+            BlockchainAdapterError: If request fails
+        """
+        pass
+    

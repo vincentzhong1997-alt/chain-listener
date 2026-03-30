@@ -91,6 +91,52 @@ class TestEthereumAdapter:
 
             assert adapter.chain_id == expected_chain_id
 
+    def test_poa_middleware_auto_enabled_for_bsc(self):
+        """PoA middleware should auto-enable for BSC chain type."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        adapter = EthereumAdapter(
+            {
+                "name": "bsc_adapter",
+                "network": "mainnet",
+                "chain_type": "bsc",
+                "rpc": {"urls": ["https://bsc.example.com"]},
+            }
+        )
+
+        assert adapter._should_enable_poa_middleware() is True
+
+    def test_poa_middleware_auto_disabled_for_ethereum(self):
+        """PoA middleware should remain disabled for Ethereum by default."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        adapter = EthereumAdapter(
+            {
+                "name": "ethereum",
+                "network": "mainnet",
+                "chain_type": "ethereum",
+                "rpc": {"urls": ["https://eth.example.com"]},
+            }
+        )
+
+        assert adapter._should_enable_poa_middleware() is False
+
+    def test_poa_middleware_can_be_forced_enabled(self):
+        """PoA middleware should support explicit global enable."""
+        from chain_listener.adapters.ethereum import EthereumAdapter
+
+        adapter = EthereumAdapter(
+            {
+                "name": "ethereum",
+                "network": "mainnet",
+                "chain_type": "ethereum",
+                "poa_middleware": True,
+                "rpc": {"urls": ["https://eth.example.com"]},
+            }
+        )
+
+        assert adapter._should_enable_poa_middleware() is True
+
     @pytest.mark.asyncio
     async def test_get_latest_block_number(self):
         """Test getting latest block number from Ethereum."""

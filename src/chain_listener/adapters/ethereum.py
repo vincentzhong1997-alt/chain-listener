@@ -21,6 +21,7 @@ from web3._utils.events import get_event_data
 
 from chain_listener.adapters.base import BaseAdapter, PriorityConnectionPool
 from chain_listener.models.events import RawEvent, DecodedEvent
+from chain_listener.models.events import ChainType
 from chain_listener.exceptions import (
     BlockchainAdapterError,
     BlockNotFoundError,
@@ -40,6 +41,8 @@ class EthereumAdapter(BaseAdapter):
         "block_time": 12,
         # Conservative block-range chunk size; can be overridden via adapter_config
         "max_block_range": 10,
+        "poa_middleware": "auto",
+        "poa_chain_types": ["bsc"],
     }
 
     def __init__(self, config: Dict[str, Any]):
@@ -98,6 +101,12 @@ class EthereumAdapter(BaseAdapter):
         self._event_signature_map: Dict[str, Dict[str, Dict[str, Any]]] = {}
         self._event_name_topic_map: Dict[str, Dict[str, str]] = {}
         self._load_contract_abis()
+        self._poa_middleware_mode = self._parse_poa_mode(
+            config.get("poa_middleware", self.DEFAULT_CONFIG["poa_middleware"])
+        )
+        self._poa_chain_types = self._parse_poa_chain_types(
+            config.get("poa_chain_types", self.DEFAULT_CONFIG["poa_chain_types"])
+        )
 
     def _validate_config(self, config: Dict[str, Any]) -> None:
         """Validate adapter configuration.
@@ -120,11 +129,84 @@ class EthereumAdapter(BaseAdapter):
             }
             if headers:
                 request_kwargs["headers"] = headers
-            self._web3_instances[url] = Web3(Web3.HTTPProvider(
+            client = Web3(Web3.HTTPProvider(
                 url,
                 request_kwargs=request_kwargs
             ))
+            self._inject_poa_middleware_if_needed(client)
+            self._web3_instances[url] = client
         return self._web3_instances[url]
+
+    @staticmethod
+    def _parse_poa_mode(raw_value: Any) -> str:
+        """Normalize PoA middleware mode to ``auto|enabled|disabled``."""
+        if isinstance(raw_value, bool):
+            return "enabled" if raw_value else "disabled"
+        value = str(raw_value).strip().lower()
+        if value in {"auto", "enabled", "disabled"}:
+            return value
+        if value in {"true", "1", "yes", "on"}:
+            return "enabled"
+        if value in {"false", "0", "no", "off"}:
+            return "disabled"
+        return "auto"
+
+    @staticmethod
+    def _parse_poa_chain_types(raw_value: Any) -> Set[str]:
+        """Parse PoA chain types from config."""
+        if isinstance(raw_value, (list, tuple, set)):
+            return {
+                str(item).strip().lower()
+                for item in raw_value
+                if str(item).strip()
+            }
+        if raw_value is None:
+            return set()
+        value = str(raw_value).strip().lower()
+        return {value} if value else set()
+
+    def _should_enable_poa_middleware(self) -> bool:
+        """Return whether PoA middleware should be enabled for this adapter."""
+        if self._poa_middleware_mode == "enabled":
+            return True
+        if self._poa_middleware_mode == "disabled":
+            return False
+        chain_value = getattr(self, "chain_type", None)
+        if isinstance(chain_value, ChainType):
+            chain_name = chain_value.value
+        else:
+            chain_name = str(chain_value or self.name or "").strip().lower()
+        return chain_name in self._poa_chain_types
+
+    def _inject_poa_middleware_if_needed(self, client: Web3) -> None:
+        """Inject PoA middleware for chains that require extraData compatibility."""
+        if not self._should_enable_poa_middleware():
+            return
+        try:
+            try:
+                from web3.middleware import ExtraDataToPOAMiddleware as poa_middleware
+            except ImportError:
+                try:
+                    from web3.middleware import geth_poa_middleware as poa_middleware
+                except ImportError:
+                    from web3.middleware.proof_of_authority import (
+                        ExtraDataToPOAMiddleware as poa_middleware,
+                    )
+            client.middleware_onion.inject(poa_middleware, layer=0)
+            self.logger.info(
+                "PoA middleware enabled for adapter=%s chain_type=%s",
+                self.name,
+                getattr(self.chain_type, "value", self.chain_type),
+            )
+        except ValueError as exc:
+            if "same name" not in str(exc).lower():
+                raise
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to inject PoA middleware for adapter=%s: %s",
+                self.name,
+                exc,
+            )
 
     
     async def connect(self) -> None:
@@ -165,70 +247,6 @@ class EthereumAdapter(BaseAdapter):
             BlockchainAdapterError: If request fails
         """
         return await self._execute_with_client(lambda w3: w3.eth.block_number)
-
-    async def get_block_by_number(self, block_number: int) -> Dict[str, Any]:
-        """Get block information by number from Ethereum.
-
-        Args:
-            block_number: Block number to retrieve
-
-        Returns:
-            Block information dictionary
-
-        Raises:
-            BlockNotFoundError: If block is not found
-            BlockchainAdapterError: If request fails
-        """
-        # Direct execution - HTTP RPC doesn't need connection management
-
-        try:
-            block = await self._execute_with_rate_limit(
-                self._w3.eth.get_block,
-                block_number
-            )
-
-            if block is None:
-                raise BlockNotFoundError(
-                    f"Block {block_number} not found",
-                    blockchain=self.name,
-                    network=self.network,
-                    block_number=block_number
-                )
-
-            # Convert to standardized format
-            return {
-                "number": block.number,
-                "hash": block.hash.hex() if block.hash else None,
-                "parent_hash": block.parentHash.hex() if block.parentHash else None,
-                "timestamp": block.timestamp,
-                "transactions": [tx.hex() for tx in block.transactions],
-                "transaction_count": len(block.transactions),
-                "gas_limit": block.gasLimit,
-                "gas_used": block.gasUsed,
-                "miner": block.miner.hex() if block.miner else None,
-                "difficulty": block.difficulty,
-                "total_difficulty": block.totalDifficulty,
-                "size": block.size,
-                "uncles": [uncle.hex() for uncle in block.uncles] if block.uncles else [],
-                "extra_data": block.extraData.hex() if block.extraData else None,
-                "logs_bloom": block.logsBloom.hex() if block.logsBloom else None,
-                "mix_hash": block.mixHash.hex() if block.mixHash else None,
-                "nonce": block.nonce.hex() if block.nonce else None,
-                "receipts_root": block.receiptsRoot.hex() if block.receiptsRoot else None,
-                "sha3_uncles": block.sha3Uncles.hex() if block.sha3Uncles else None,
-                "state_root": block.stateRoot.hex() if block.stateRoot else None,
-                "transactions_root": block.transactionsRoot.hex() if block.transactionsRoot else None
-            }
-
-        except BlockNotFound:
-            raise BlockNotFoundError(
-                f"Block {block_number} not found",
-                blockchain=self.name,
-                network=self.network,
-                block_number=block_number
-            )
-        except Exception as e:
-            self._handle_blockchain_error(e)
 
     async def get_logs(
         self,
@@ -337,28 +355,6 @@ class EthereumAdapter(BaseAdapter):
             return None
 
         return [list(topics)]
-
-    def _build_block_ranges(
-        self,
-        from_block: Optional[Union[int, str]],
-        to_block: Optional[Union[int, str]]
-    ) -> List[tuple]:
-        """Split the requested range into max_block_range-sized chunks."""
-        if (
-            isinstance(from_block, int)
-            and isinstance(to_block, int)
-            and to_block >= from_block
-        ):
-            ranges: List[tuple] = []
-            current = from_block
-            while current <= to_block:
-                chunk_end = min(current + self.max_block_range - 1, to_block)
-                ranges.append((current, chunk_end))
-                current = chunk_end + 1
-            return ranges
-
-        # Non-integer or open-ended ranges can't be chunked safely
-        return [(from_block, to_block)]
 
     def _convert_log_to_standard_format(self, log: Any) -> Dict[str, Any]:
         """Convert Web3 log to standard format.
@@ -923,3 +919,43 @@ class EthereumAdapter(BaseAdapter):
             log_index=event.log_index,
             timestamp=timestamp
         )
+
+    async def get_block_by_number(self, block_number: int) -> Dict[str, Any]:
+        """Get block information by number from Ethereum.
+
+        Args:
+            block_number: Block number to retrieve
+
+        Returns:
+            Block information dictionary
+
+        Raises:
+            BlockNotFoundError: If block is not found
+            BlockchainAdapterError: If request fails
+        """
+        # Direct execution - HTTP RPC doesn't need connection management
+
+        get_block_operation = lambda w3: w3.eth.get_block(block_number, full_transactions=False)
+        try:
+            block = await self._execute_with_client(get_block_operation)
+
+            if block is None:
+                raise BlockNotFoundError(
+                    f"Block {block_number} not found",
+                    blockchain=self.name,
+                    network=self.network,
+                    block_number=block_number
+                )
+
+            # Convert to standardized format
+            return block
+
+        except BlockNotFound:
+            raise BlockNotFoundError(
+                f"Block {block_number} not found",
+                blockchain=self.name,
+                network=self.network,
+                block_number=block_number
+            )
+        except Exception as e:
+            self._handle_blockchain_error(e)

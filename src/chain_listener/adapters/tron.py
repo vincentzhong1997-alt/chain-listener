@@ -463,3 +463,27 @@ class TronAdapter(BaseAdapter):
             log_index=event.log_index,
             timestamp=int(timestamp) if timestamp is not None else 0,
         )
+    
+    async def get_block_by_number(self, block_number: int) -> Optional[Dict[str, Any]]:
+        async def fetch_block(client: Tron) -> Optional[Dict[str, Any]]:
+            block = client.get_block(block_number)
+            return block
+
+        try:
+            block = await self._execute_with_client(fetch_block)
+            return block
+        except KeyError:
+            raise BlockchainAdapterError(
+                f"Block {block_number} not found",
+                blockchain=self.name,
+                network=self.network,
+                block_number=block_number
+            )
+        except Exception as e:
+            self.logger.error(f"Error fetching block {block_number}: {e}")
+            raise BlockchainAdapterError(
+                f"Error fetching block {block_number}: {e}",
+                blockchain=self.name,
+                network=self.network,
+                block_number=block_number
+            )

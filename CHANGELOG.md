@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.10] - 2026-03-28
+
+### 🚀 Add Feature
+- **event log add timestamp field**: event log add block chain timestamp field
+
+## [0.2.7] - 2026-03-27
+
+### 🐛 Bug Fixes
+- **fix confirmation_blocks is not used problem**: `confirmation_blocks` should be use when listen to chain event
+
+## [0.2.6] - 2026-03-27
+
+### 🐛 Bug Fixes
+- **Config flexibility for chain runtimes**: remove hard upper bounds for
+  `max_block_batch`, `confirmation_blocks`, and `polling_interval` to allow
+  high-latency and archival sync scenarios with custom runtime parameters.
+
 ## [0.2.5] - 2026-03-25
 
 ### 🐛 Bug Fixes

@@ -376,3 +376,33 @@ class SolanaAdapter(BaseAdapter):
                 batch = []
         if batch:
             yield batch
+    
+    async def get_block_by_number(self, block_number: int) -> Dict[str, Any]:
+        try:
+            response = await self._execute_with_client(
+                lambda client: client.get_block(
+                    block_number,
+                    commitment=self.commitment,
+                    encoding="jsonParsed",
+                    max_supported_transaction_version=0,
+                )
+            )
+            block = self._unwrap_rpc_result(response)
+            if not block:
+                raise BlockchainAdapterError(
+                    f"Block {block_number} not found",
+                    blockchain=self.name,
+                    network=self.network,
+                    block_number=block_number
+                )
+            return block
+        except BlockchainAdapterError:
+            raise
+        except Exception as e:
+            self.logger.error(f"Error fetching block {block_number}: {e}")
+            raise BlockchainAdapterError(
+                f"Error fetching block {block_number}: {e}",
+                blockchain=self.name,
+                network=self.network,
+                block_number=block_number
+            )

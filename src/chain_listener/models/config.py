@@ -41,7 +41,7 @@ class RPCConfig(BaseModel):
     headers: Dict[str, str] = Field(default_factory=dict, description="HTTP headers to send with RPC requests")
     timeout: int = Field(default=30, ge=1, le=300, description="Request timeout in seconds")
     retries: int = Field(default=3, ge=0, le=10, description="Number of retry attempts")
-    max_block_batch: int = Field(default=10, ge=0, le=100, description="batch get events size")
+    max_block_batch: int = Field(default=10, ge=0, description="batch get events size")
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig, description="Rate limiting configuration")
 
     @field_validator("urls")
@@ -145,8 +145,8 @@ class ChainConfig(BaseModel):
         ge=0,
         description="Optional starting block override for initial sync"
     )
-    confirmation_blocks: int = Field(default=12, ge=0, le=100, description="Number of confirmation blocks")
-    polling_interval: int = Field(default=1000, ge=100, le=60000, description="Polling interval in milliseconds")
+    confirmation_blocks: int = Field(default=12, ge=0, description="Number of confirmation blocks")
+    polling_interval: int = Field(default=1000, ge=100, description="Polling interval in milliseconds")
     rpc: Annotated[RPCConfig, Field(..., description="RPC configuration for connection management")]
     contracts: Annotated[List[ContractConfig], Field(default_factory=list, description="Smart contracts to monitor")]
 
